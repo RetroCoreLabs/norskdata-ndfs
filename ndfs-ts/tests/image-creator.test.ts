@@ -34,6 +34,19 @@ describe('ImageCreator', () => {
       expect(users[0].userName).toBe('SYSTEM');
     });
 
+    // Regression: the image creator wrote defaultFileAccess to offset+38
+    // instead of +40 (38-39 is an unused gap -- see UserEntry.fromBytes),
+    // so a freshly created image's SYSTEM read defaultFileAccess as 0 and
+    // every new file fell through to the restrictive ACCESS_DEFAULT
+    // (0x03FF, PUBLIC nothing). Matches ndfs-c's ndfs_ue_init, which stamps
+    // a fresh user 0x04FF.
+    it('SYSTEM gets defaultFileAccess 0x04FF, granting PUBLIC READ', () => {
+      const fs = NdfsFileSystem.createImage({
+        template: ImageTemplate.Floppy360KB,
+      });
+      expect(fs.getUser(0)!.defaultFileAccess).toBe(0x04ff);
+    });
+
     it('marks system blocks as used in bitmap', () => {
       const fs = NdfsFileSystem.createImage({
         template: ImageTemplate.Floppy360KB,
@@ -222,6 +235,19 @@ describe('ImageCreator', () => {
       });
       const users = fs.getUsers();
       expect(users.length).toBe(3); // SYSTEM + ALICE + BOB
+    });
+
+    // Same offset+38-vs-40 regression as SYSTEM's, for a user created via
+    // options.users at image-creation time rather than addUser() afterward.
+    it('extra users created at image-creation time also get defaultFileAccess 0x04FF', () => {
+      const fs = NdfsFileSystem.createImage({
+        template: ImageTemplate.Custom,
+        customPages: 200,
+        directoryName: 'MULTIUSER',
+        users: [{ name: 'ALICE', reservedPages: 50 }],
+      });
+      const alice = fs.getUsers().find((u) => u.userName === 'ALICE')!;
+      expect(alice.defaultFileAccess).toBe(0x04ff);
     });
   });
 });

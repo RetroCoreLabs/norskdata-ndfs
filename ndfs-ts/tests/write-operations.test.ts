@@ -168,17 +168,18 @@ describe('WriteOperations', () => {
   // writeFile's accessBits parameter must override the owning user's
   // inherited defaultFileAccess outright, on a NEWLY CREATED file.
   //
-  // Set explicitly to the restrictive, PUBLIC-nothing shape (0x03FF) rather
-  // than relied on as-created: unlike ndfs-c's ndfs_ue_init (which stamps a
-  // fresh user 0x04FF, granting PUBLIC READ), ndfs-ts's image creator
-  // currently never writes defaultFileAccess for SYSTEM at all, so a
-  // freshly created image's SYSTEM already reads 0 here -- a real,
-  // pre-existing C/TS divergence, tracked separately, that this test
-  // deliberately does not depend on either way. getUser returns the live
-  // entry, not a copy, so mutating it here is enough.
+  // createImage() gives SYSTEM defaultFileAccess 0x04FF (PUBLIC READ already
+  // granted, matching ndfs-c's ndfs_ue_init), so the invisible-to-SYSTEM bug
+  // this parameter exists for only shows up against an OLDER-style user
+  // entry whose default is 0x03FF (PUBLIC nothing) -- exactly what a real
+  // SINTRAN pack can carry. Reproduced here by mutating SYSTEM's
+  // defaultFileAccess directly (getUser returns the live entry, not a copy)
+  // rather than asserting something this library would never produce on
+  // its own.
   it('accessBits override wins over an inherited restrictive default', () => {
     const fs = createFS();
     const system = fs.getUser(0)!;
+    expect(system.defaultFileAccess).toBe(0x04ff);
     system.defaultFileAccess = 0x03ff; // the restrictive, PUBLIC-nothing shape
 
     // Without an override, the new file inherits the (now-restrictive)

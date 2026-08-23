@@ -282,8 +282,13 @@ export function createNdfsImage(options: ImageCreationOptions): Uint8Array {
   // User index = 0
   image[usrDataOff + 37] = 0;
 
-  // Default file access = 0x04FF
-  writeUint16BE(image, usrDataOff + 38, 0x04ff);
+  // Default file access = 0x04FF. Offset 40, NOT 38 -- offsets 38-39 are an
+  // unused gap (see UserEntry.fromBytes/toBytes); writing to +38 landed the
+  // value where nothing ever reads it, so a freshly created image's SYSTEM
+  // user read defaultFileAccess as 0 and every new file fell through to the
+  // restrictive ACCESS_DEFAULT (0x03FF, PUBLIC nothing) -- the exact
+  // invisible-to-SYSTEM shape ACCESS_PUBLIC_READ exists to work around.
+  writeUint16BE(image, usrDataOff + 40, 0x04ff);
 
   // Add optional extra users
   if (options.users) {
@@ -300,7 +305,7 @@ export function createNdfsImage(options: ImageCreationOptions): Uint8Array {
       writeUint32BE(image, entryOff + 32, 0);
       image[entryOff + 36] = 0;
       image[entryOff + 37] = slotIndex;
-      writeUint16BE(image, entryOff + 38, 0x04ff);
+      writeUint16BE(image, entryOff + 40, 0x04ff); // offset 40, not 38 -- see SYSTEM's entry above
     }
   }
 
