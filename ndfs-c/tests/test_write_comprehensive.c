@@ -951,6 +951,78 @@ static int test_subindexed_sparse_holes(void)
     return 0;
 }
 
+/* ndfs_get_file_blocks() had no test anywhere in this suite -- py's
+ * get_file_blocks and ts's getFileBlocks both have direct tests
+ * (test_sparse_files.py, test_bit_file_ordering.py, test_xat_holes.py /
+ * sparse-files.test.ts, xat-holes.test.ts), so this closes a real
+ * cross-port coverage gap. */
+static int test_get_file_blocks_reports_holes_as_zero(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_360KB, "GETBLKS");
+    uint32_t logical_pages = 5;
+    size_t size = (size_t)logical_pages * NDFS_PAGE_SIZE;
+    uint8_t *data = (uint8_t *)calloc(size, 1);
+    static const uint32_t hole_pages[] = { 1, 3 }; /* pages 0, 2, 4 stay real */
+    ndfs_hole_list_t holes;
+    uint32_t *blocks = NULL;
+    size_t count = 0;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_NOT_NULL(data);
+    fill_nonzero_pattern(data + (size_t)0 * NDFS_PAGE_SIZE, NDFS_PAGE_SIZE, 1);
+    fill_nonzero_pattern(data + (size_t)2 * NDFS_PAGE_SIZE, NDFS_PAGE_SIZE, 2);
+    fill_nonzero_pattern(data + (size_t)4 * NDFS_PAGE_SIZE, NDFS_PAGE_SIZE, 3);
+
+    holes.pages = hole_pages;
+    holes.count = 2;
+    TEST_ASSERT_OK(ndfs_write_file_holes(fs, "SYSTEM/GETBLKS:DATA", data, size,
+                                         NDFS_PARITY_NONE, &holes));
+    free(data);
+
+    TEST_ASSERT_OK(ndfs_get_file_blocks(fs, "SYSTEM/GETBLKS:DATA", &blocks, &count));
+    TEST_ASSERT_NOT_NULL(blocks);
+    TEST_ASSERT_EQUAL(logical_pages, count);
+
+    /* Declared holes read back as block_id 0; every other slot is a real,
+     * non-zero block -- and no two real slots may collide. */
+    TEST_ASSERT_EQUAL(0, blocks[1]);
+    TEST_ASSERT_EQUAL(0, blocks[3]);
+    TEST_ASSERT(blocks[0] != 0);
+    TEST_ASSERT(blocks[2] != 0);
+    TEST_ASSERT(blocks[4] != 0);
+    TEST_ASSERT(blocks[0] != blocks[2]);
+    TEST_ASSERT(blocks[0] != blocks[4]);
+    TEST_ASSERT(blocks[2] != blocks[4]);
+
+    free(blocks);
+    ndfs_close(fs);
+    return 0;
+}
+
+/* A file with no holes at all must report every logical page as a distinct
+ * real block, in order -- the plain, non-sparse case. */
+static int test_get_file_blocks_fully_real_file(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_360KB, "GETBLKS2");
+    uint8_t data[3 * NDFS_PAGE_SIZE];
+    uint32_t *blocks = NULL;
+    size_t count = 0;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    fill_nonzero_pattern(data, sizeof(data), 9);
+
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/GETBLKS2:DATA", data, sizeof(data)));
+    TEST_ASSERT_OK(ndfs_get_file_blocks(fs, "SYSTEM/GETBLKS2:DATA", &blocks, &count));
+    TEST_ASSERT_NOT_NULL(blocks);
+    TEST_ASSERT_EQUAL(3, count);
+    TEST_ASSERT(blocks[0] != 0 && blocks[1] != 0 && blocks[2] != 0);
+    TEST_ASSERT(blocks[0] != blocks[1] && blocks[1] != blocks[2]);
+
+    free(blocks);
+    ndfs_close(fs);
+    return 0;
+}
+
 /* Deleting a SubIndexed file must free every block it owns: data blocks,
  * every group's own index block, AND the top-level sub-index block. */
 static int test_subindexed_delete_frees_all_blocks(void)
@@ -1819,6 +1891,8 @@ void run_write_comprehensive_tests(void)
     RUN_TEST(test_subindexed_just_over_boundary);
     RUN_TEST(test_subindexed_multi_group_roundtrip);
     RUN_TEST(test_subindexed_sparse_holes);
+    RUN_TEST(test_get_file_blocks_reports_holes_as_zero);
+    RUN_TEST(test_get_file_blocks_fully_real_file);
     RUN_TEST(test_subindexed_delete_frees_all_blocks);
     RUN_TEST(test_subindexed_overwrite_no_leak);
     RUN_TEST(test_object_dir_converts_past_64_users);

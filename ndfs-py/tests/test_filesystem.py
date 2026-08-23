@@ -272,11 +272,79 @@ class TestNdfsFileSystemBitmap:
         assert free > 0
         assert free < 50
 
+    def test_used_and_free_pages_sum_to_total(self):
+        # get_used_pages() has no dedicated test elsewhere in this suite --
+        # tested via the invariant used+free == total (the physical page
+        # count of the image), rather than a hardcoded expected count, so
+        # this does not depend on exactly how many structural pages a write
+        # costs. Checked both on a fresh image and after a write, so a
+        # get_used_pages() that silently returns 0 or a stale value would
+        # break the invariant either way.
+        ndfs = NdfsFileSystem(create_test_image(100))
+        total = len(ndfs.to_buffer()) // NDFS_PAGE_SIZE
+
+        assert ndfs.get_used_pages() + ndfs.get_free_pages() == total
+
+        ndfs.write_file("SYSTEM/USEDPGS:DATA", b"x" * (3 * NDFS_PAGE_SIZE))
+        assert ndfs.get_used_pages() + ndfs.get_free_pages() == total
+        assert ndfs.get_used_pages() > 0
+
+
+class TestNdfsFileSystemGetObjectEntry:
+    """get_object_entry() had no dedicated test anywhere in this suite --
+    only exercised transitively through write_file()'s internal lookups."""
+
+    def test_finds_entry_by_name_and_user(self):
+        ndfs = NdfsFileSystem(create_test_image())
+        ndfs.write_file("SYSTEM/FOUNDIT:DATA", b"hello")
+
+        entry = ndfs.get_object_entry("FOUNDIT", "SYSTEM", "DATA")
+
+        assert entry is not None
+        assert entry.object_name.strip() == "FOUNDIT"
+        assert entry.bytes_in_file == 5
+
+    def test_returns_none_for_missing_entry(self):
+        ndfs = NdfsFileSystem(create_test_image())
+        assert ndfs.get_object_entry("NOPE", "SYSTEM", "DATA") is None
+
+    def test_file_type_disambiguates_same_name_different_type(self):
+        # The exact scenario get_object_entry's file_type parameter exists
+        # for: two files sharing a name, differing only in type.
+        ndfs = NdfsFileSystem(create_test_image())
+        ndfs.write_file("SYSTEM/AAA:LIST", b"L" * 10)
+        ndfs.write_file("SYSTEM/AAA:MODE", b"M" * 20)
+
+        list_entry = ndfs.get_object_entry("AAA", "SYSTEM", "LIST")
+        mode_entry = ndfs.get_object_entry("AAA", "SYSTEM", "MODE")
+
+        assert list_entry is not None and list_entry.bytes_in_file == 10
+        assert mode_entry is not None and mode_entry.bytes_in_file == 20
+
 
 class TestNdfsFileSystemIntegrity:
     def test_reports_valid_for_clean_image(self):
         ndfs = NdfsFileSystem(create_test_image())
         assert ndfs.verify_integrity() is True
+
+
+class TestNdfsFileSystemGenerateReport:
+    """generate_report() had no dedicated test anywhere in this suite,
+    unlike ndfs-c's equivalent (test_filesystem.c)."""
+
+    def test_report_names_the_volume_and_counts(self):
+        ndfs = NdfsFileSystem(create_test_image())
+        ndfs.add_user("GUEST", 50)
+        ndfs.write_file("SYSTEM/REPORTME:DATA", b"x" * 10)
+
+        report = ndfs.generate_report()
+
+        assert "NDFS Filesystem Report" in report
+        assert "Users: 2" in report
+        assert "Files: 1" in report
+        assert "GUEST" in report
+        assert "REPORTME" in report
+        assert report.endswith("\n")
 
 
 class TestNdfsFileSystemEdgeCases:

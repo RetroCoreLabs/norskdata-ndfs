@@ -227,6 +227,73 @@ static int test_destroy_null(void)
     return 0;
 }
 
+/* ndfs_bf_load() had no direct test anywhere in this suite -- only exercised
+ * transitively through opening a full filesystem image, which never
+ * isolates the bit file's own load path from everything else being parsed
+ * at the same time. This is the one function that puts an ON-DISK bitmap
+ * (the historically most bug-prone structure in this whole project -- see
+ * the 0.0.5 byte-swap regression) into a BitFile the library will then rely
+ * on for every allocation. */
+static int test_load_restores_bitmap_from_bytes(void)
+{
+    ndfs_bit_file_t src, dst;
+    const uint8_t *data;
+    size_t len;
+    uint8_t copy[64];
+    memset(&src, 0, sizeof(src));
+    memset(&dst, 0, sizeof(dst));
+
+    ndfs_bf_init(&src, 64);
+    ndfs_bf_mark_used(&src, 7);
+    ndfs_bf_mark_used(&src, 8);
+    ndfs_bf_mark_used(&src, 63);
+    ndfs_bf_get_data(&src, &data, &len);
+    TEST_ASSERT(len <= sizeof(copy));
+    memcpy(copy, data, len);
+
+    /* A second, independently initialized bit file loads those exact bytes
+     * and must agree with the source on every page, not just the ones
+     * marked used -- ndfs_bf_load() is the ONLY path being tested here, so
+     * a bug in it (a byte-swap, an off-by-one, a truncated copy) has
+     * nothing else to hide behind. */
+    ndfs_bf_init(&dst, 64);
+    TEST_ASSERT_OK(ndfs_bf_load(&dst, copy, len));
+    {
+        uint32_t p;
+        for (p = 0; p < 64; p++) {
+            TEST_ASSERT_EQUAL(ndfs_bf_is_used(&src, p), ndfs_bf_is_used(&dst, p));
+        }
+    }
+
+    ndfs_bf_destroy(&src);
+    ndfs_bf_destroy(&dst);
+    return 0;
+}
+
+/* A shorter-than-bitmap_size buffer must copy only what was given and leave
+ * the rest of the destination untouched (the implementation's documented
+ * "copy_len = min(len, bitmap_size)" behavior) -- never read past the end
+ * of the caller's buffer. */
+static int test_load_partial_buffer_leaves_remainder_untouched(void)
+{
+    ndfs_bit_file_t bf;
+    const uint8_t *data;
+    size_t len;
+    static const uint8_t one_byte[1] = { 0xFF };
+    memset(&bf, 0, sizeof(bf));
+
+    ndfs_bf_init(&bf, 16); /* bitmap_size == 2 bytes */
+    TEST_ASSERT_OK(ndfs_bf_load(&bf, one_byte, 1));
+
+    ndfs_bf_get_data(&bf, &data, &len);
+    TEST_ASSERT_EQUAL(2, len);
+    TEST_ASSERT_EQUAL(0xFF, data[0]); /* byte 0: copied from the 1-byte buffer */
+    TEST_ASSERT_EQUAL(0x00, data[1]); /* byte 1: untouched, still zero from init */
+
+    ndfs_bf_destroy(&bf);
+    return 0;
+}
+
 void run_bit_file_tests(void)
 {
     TEST_SUITE_BEGIN("BitFile Tests");
@@ -240,5 +307,7 @@ void run_bit_file_tests(void)
     RUN_TEST(test_allocate_blocks);
     RUN_TEST(test_free_range);
     RUN_TEST(test_bitmap_bit_layout);
+    RUN_TEST(test_load_restores_bitmap_from_bytes);
+    RUN_TEST(test_load_partial_buffer_leaves_remainder_untouched);
     RUN_TEST(test_destroy_null);
 }

@@ -369,6 +369,25 @@ describe('NdfsFileSystem', () => {
     });
   });
 
+  // generateReport() had no dedicated test anywhere in this suite, unlike
+  // ndfs-c's equivalent (test_filesystem.c).
+  describe('generateReport', () => {
+    it('names the volume and counts users/files', () => {
+      const ndfs = new NdfsFileSystem(createTestImage());
+      ndfs.addUser('GUEST', 50);
+      ndfs.writeFile('SYSTEM/REPORTME:DATA', new TextEncoder().encode('x'.repeat(10)));
+
+      const report = ndfs.generateReport();
+
+      expect(report).toContain('NDFS Filesystem Report');
+      expect(report).toContain('Users: 2');
+      expect(report).toContain('Files: 1');
+      expect(report).toContain('GUEST');
+      expect(report).toContain('REPORTME');
+      expect(report.endsWith('\n')).toBe(true);
+    });
+  });
+
   describe('edge cases', () => {
     it('handles file with . separator', () => {
       const ndfs = new NdfsFileSystem(createTestImage());
