@@ -248,12 +248,29 @@ export class NdfsFileSystem {
    * @param holes Logical page indices to leave unallocated. The only
    *   legitimate source is the holes recorded from an original: the XAT
    *   sidecar's "ndfs.holes".
+   * @param accessBits 15-bit access word to stamp on a NEWLY CREATED file, or
+   *   undefined to inherit the owning user's default file access. Ignored
+   *   entirely when overwriting an existing file.
+   *
+   *   Layout (offset 26 of the object entry, uint16 BE): bits 14-10 PUBLIC,
+   *   9-5 FRIEND, 4-0 OWN; within each 5-bit tier: bit 4 Delete, bit 3
+   *   Execute/Common, bit 2 Append, bit 1 Write, bit 0 Read.
+   *
+   *   PASS ACCESS_PUBLIC_READ WHEN BUILDING DISTRIBUTION MEDIA. A user
+   *   created by a real SINTRAN carries defaultFileAccess 0x03FF -- owner
+   *   and friends everything, PUBLIC NOTHING -- so files inherited from it
+   *   are invisible to every other user, SYSTEM included, and @LIST-FILES
+   *   from SYSTEM prints nothing while the pack itself is perfectly valid.
+   *   Measured on a real ND product floppy (210580B01-XX-01D): every file on
+   *   it carries 0x07FF, the same owner/friend rights plus PUBLIC READ (see
+   *   ACCESS_PUBLIC_READ in object-entry.ts for the full measurement).
    */
   writeFile(
     path: string,
     fileData: Uint8Array,
     parity: ParityMode = 'none',
     holePages?: Iterable<number>,
+    accessBits?: number,
   ): void {
     const holes: ReadonlySet<number> | undefined =
       holePages === undefined ? undefined : new Set(holePages);
@@ -312,7 +329,7 @@ export class NdfsFileSystem {
     if (existing) {
       this.updateExistingFile(existing, user, fileData, holes);
     } else {
-      this.createNewFile(objectName, fileType, user, fileData, holes);
+      this.createNewFile(objectName, fileType, user, fileData, holes, accessBits);
     }
     // updateExistingFile / createNewFile perform their own surgical metadata
     // writes (object page, owner user page, bitmap).
@@ -1441,6 +1458,7 @@ export class NdfsFileSystem {
     user: UserEntry,
     fileData: Uint8Array,
     holes?: ReadonlySet<number>,
+    accessBits?: number,
   ): void {
     let dataPages = Math.ceil(fileData.length / NDFS_PAGE_SIZE);
     if (dataPages === 0) dataPages = 1;
@@ -1490,9 +1508,18 @@ export class NdfsFileSystem {
     // The allocation flag, self-referential version chain and object index
     // ([user|slot]) below keep SINTRAN from seeing a broken version chain
     // (";2") and refusing to open the file.
-    entry.accessBits = user.defaultFileAccess
-      ? user.defaultFileAccess & 0x7fff
-      : ACCESS_DEFAULT;
+    //
+    // An EXPLICIT accessBits always wins over inheritance: inheriting is
+    // right for a file created on a live machine, but wrong for distribution
+    // media, where the owning user's default may grant PUBLIC nothing and
+    // make every file invisible to SYSTEM. See writeFile's docstring and
+    // ACCESS_PUBLIC_READ (object-entry.ts) for the measurement.
+    entry.accessBits =
+      accessBits !== undefined
+        ? accessBits & 0x7fff
+        : user.defaultFileAccess
+          ? user.defaultFileAccess & 0x7fff
+          : ACCESS_DEFAULT;
     entry.fileTypeFlags =
       pointerType === PointerType.Contiguous ? FT_CONTIGUOUS : FT_INDEXED;
     // objectIndex already encodes [user|fileEntry] (chosen in the user region).

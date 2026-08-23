@@ -216,6 +216,43 @@ ndfs_error_t ndfs_write_file_parity(ndfs_filesystem_t *fs,
                                     size_t file_size,
                                     ndfs_parity_mode_t parity);
 
+/**
+ * Write (create or overwrite) a file with full control: parity, sparse
+ * holes, AND an access-bits override for a newly-created file. This is the
+ * one real writer -- ndfs_write_file(), ndfs_write_file_holes() and
+ * ndfs_write_file_parity() are thin wrappers over it with `access_bits` NULL
+ * (inherit the owning user's default file access, or NDFS_ACCESS_DEFAULT
+ * when the user carries none).
+ *
+ * `access_bits`, when non-NULL, overrides that inheritance outright and
+ * ONLY affects a file being newly created -- overwriting an existing file
+ * never touches its access_bits (mirrors update_existing_file, which never
+ * did either). Ignored entirely on an overwrite.
+ *
+ * PASS NDFS_ACCESS_PUBLIC_READ WHEN BUILDING DISTRIBUTION MEDIA. A user
+ * created by a real SINTRAN carries default_file_access 0x03FF -- owner and
+ * friends everything, PUBLIC NOTHING -- so files inherited from it are
+ * invisible to every other user, SYSTEM included, and @LIST-FILES from
+ * SYSTEM prints nothing while the pack itself is perfectly valid. Measured
+ * on a real ND product floppy (210580B01-XX-01D): every file on it carries
+ * 0x07FF, the same owner/friend rights plus PUBLIC READ (see
+ * NDFS_ACCESS_PUBLIC_READ in object_entry.h for the full measurement).
+ *
+ * @param holes        Ascending logical page indices to leave unallocated,
+ *                      or NULL -- see ndfs_write_file_holes().
+ * @param access_bits  15-bit access word to stamp on a newly-created file
+ *                      (see object_entry.h for the OWN/FRIEND/PUBLIC tier
+ *                      layout), or NULL to inherit the owning user's
+ *                      default.
+ */
+ndfs_error_t ndfs_write_file_full(ndfs_filesystem_t *fs,
+                                  const char *path,
+                                  const uint8_t *file_data,
+                                  size_t file_size,
+                                  ndfs_parity_mode_t parity,
+                                  const ndfs_hole_list_t *holes,
+                                  const uint16_t *access_bits);
+
 /** Delete a file. */
 ndfs_error_t ndfs_delete_file(ndfs_filesystem_t *fs, const char *path);
 

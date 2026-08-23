@@ -122,7 +122,8 @@ static ndfs_error_t create_new_file(struct ndfs_filesystem *fs,
                                     const char *obj_name, const char *file_type,
                                     int user_idx,
                                     const uint8_t *file_data, size_t file_size,
-                                    const ndfs_hole_list_t *holes);
+                                    const ndfs_hole_list_t *holes,
+                                    const uint16_t *access_bits);
 static ndfs_error_t update_existing_file(struct ndfs_filesystem *fs,
                                          int obj_idx, int user_idx,
                                          const uint8_t *file_data, size_t file_size,
@@ -131,7 +132,8 @@ static ndfs_error_t write_file_impl(ndfs_filesystem_t *fs,
                                     const char *path,
                                     const uint8_t *file_data,
                                     size_t file_size,
-                                    const ndfs_hole_list_t *holes);
+                                    const ndfs_hole_list_t *holes,
+                                    const uint16_t *access_bits);
 static ndfs_error_t allocate_and_write_data(struct ndfs_filesystem *fs,
                                             const uint8_t *file_data, size_t file_size,
                                             uint32_t data_pages,
@@ -1524,7 +1526,8 @@ static ndfs_error_t create_new_file(struct ndfs_filesystem *fs,
                                     const char *obj_name, const char *file_type,
                                     int user_slot,
                                     const uint8_t *file_data, size_t file_size,
-                                    const ndfs_hole_list_t *holes)
+                                    const ndfs_hole_list_t *holes,
+                                    const uint16_t *access_bits)
 {
     uint32_t data_pages = (uint32_t)((file_size + NDFS_PAGE_SIZE - 1) / NDFS_PAGE_SIZE);
     uint32_t top_block_id;
@@ -1612,10 +1615,20 @@ static ndfs_error_t create_new_file(struct ndfs_filesystem *fs,
      * as before rather than creating files nobody may touch.
      *
      * No separate SubIndexed file-type-flag bit exists (mirrors the TS port),
-     * so FT_INDEXED covers both Indexed and SubIndexed layouts. */
-    entry.access_bits = fs->users[user_slot].default_file_access
-                            ? (uint16_t)(fs->users[user_slot].default_file_access & 0x7FFFu)
-                            : NDFS_ACCESS_DEFAULT;
+     * so FT_INDEXED covers both Indexed and SubIndexed layouts.
+     *
+     * An EXPLICIT access_bits always wins over inheritance: inheriting is
+     * right for a file created on a live machine, but wrong for distribution
+     * media, where the owning user's default may grant PUBLIC nothing and
+     * make every file invisible to SYSTEM. See ndfs_write_file_full() and
+     * NDFS_ACCESS_PUBLIC_READ (object_entry.h) for the measurement. */
+    if (access_bits) {
+        entry.access_bits = (uint16_t)(*access_bits & 0x7FFFu);
+    } else {
+        entry.access_bits = fs->users[user_slot].default_file_access
+                                ? (uint16_t)(fs->users[user_slot].default_file_access & 0x7FFFu)
+                                : NDFS_ACCESS_DEFAULT;
+    }
     entry.file_type_flags = NDFS_FT_INDEXED;
     /* object_index already encodes [user|fileEntry] (it was chosen inside the
      * user's region). The object-index word and a single-version file's
@@ -2336,17 +2349,7 @@ ndfs_error_t ndfs_write_file_holes(ndfs_filesystem_t *fs,
                                    ndfs_parity_mode_t parity,
                                    const ndfs_hole_list_t *holes)
 {
-    if (parity == NDFS_PARITY_SET && file_data && file_size > 0) {
-        uint8_t *copy = (uint8_t *)malloc(file_size);
-        ndfs_error_t err;
-        if (!copy) return NDFS_ERR_ALLOC;
-        memcpy(copy, file_data, file_size);
-        ndfs_set_parity(copy, file_size);
-        err = write_file_impl(fs, path, copy, file_size, holes);
-        free(copy);
-        return err;
-    }
-    return write_file_impl(fs, path, file_data, file_size, holes);
+    return ndfs_write_file_full(fs, path, file_data, file_size, parity, holes, NULL);
 }
 
 ndfs_error_t ndfs_write_file(ndfs_filesystem_t *fs,
@@ -2354,17 +2357,42 @@ ndfs_error_t ndfs_write_file(ndfs_filesystem_t *fs,
                              const uint8_t *file_data,
                              size_t file_size)
 {
-    return write_file_impl(fs, path, file_data, file_size, NULL);
+    return write_file_impl(fs, path, file_data, file_size, NULL, NULL);
+}
+
+ndfs_error_t ndfs_write_file_full(ndfs_filesystem_t *fs,
+                                  const char *path,
+                                  const uint8_t *file_data,
+                                  size_t file_size,
+                                  ndfs_parity_mode_t parity,
+                                  const ndfs_hole_list_t *holes,
+                                  const uint16_t *access_bits)
+{
+    if (parity == NDFS_PARITY_SET && file_data && file_size > 0) {
+        uint8_t *copy = (uint8_t *)malloc(file_size);
+        ndfs_error_t err;
+        if (!copy) return NDFS_ERR_ALLOC;
+        memcpy(copy, file_data, file_size);
+        ndfs_set_parity(copy, file_size);
+        err = write_file_impl(fs, path, copy, file_size, holes, access_bits);
+        free(copy);
+        return err;
+    }
+    return write_file_impl(fs, path, file_data, file_size, holes, access_bits);
 }
 
 /* The one real writer. `holes` names the logical pages to leave unallocated and
  * is NULL for the ordinary fully-allocated case; nothing here ever infers a
- * hole from the data (see write_data_page_to_index for why). */
+ * hole from the data (see write_data_page_to_index for why). `access_bits`,
+ * when non-NULL, overrides the owning user's inherited default access on a
+ * NEWLY CREATED file only -- see create_new_file and NDFS_ACCESS_PUBLIC_READ
+ * (object_entry.h). */
 static ndfs_error_t write_file_impl(ndfs_filesystem_t *fs,
                                     const char *path,
                                     const uint8_t *file_data,
                                     size_t file_size,
-                                    const ndfs_hole_list_t *holes)
+                                    const ndfs_hole_list_t *holes,
+                                    const uint16_t *access_bits)
 {
     char user_name[NDFS_NAME_MAX + 1];
     char obj_name[NDFS_NAME_MAX + 1];
@@ -2449,7 +2477,8 @@ static ndfs_error_t write_file_impl(ndfs_filesystem_t *fs,
     if (existing_idx >= 0) {
         err = update_existing_file(fs, existing_idx, user_slot, file_data, file_size, holes);
     } else {
-        err = create_new_file(fs, obj_name, file_type, user_slot, file_data, file_size, holes);
+        err = create_new_file(fs, obj_name, file_type, user_slot, file_data, file_size,
+                              holes, access_bits);
     }
 
     /* create_new_file / update_existing_file performed their own surgical

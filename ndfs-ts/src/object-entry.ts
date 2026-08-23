@@ -57,6 +57,24 @@ export const FT_LIBRARY = 1 << 7;
 /** Default access for a new file: OWN + FRIEND all rights, PUBLIC none. */
 export const ACCESS_DEFAULT = 0x03ff;
 
+/**
+ * What a real ND PRODUCT FLOPPY carries on every file: the same OWN/FRIEND
+ * rights as ACCESS_DEFAULT plus PUBLIC READ.
+ *
+ * MEASURED on 210580B01-XX-01D (genuine ND Ethernet distribution floppy): all
+ * 12 files read 0x07FF. This is not cosmetic -- PUBLIC is the tier every user
+ * who is neither the owner nor a friend falls into, SYSTEM included, so with
+ * PUBLIC = 0 the files are invisible from any other user and @LIST-FILES
+ * prints nothing while the pack itself verifies clean. Proved by adding one
+ * 0x03FF file beside those 12: SINTRAN listed the original twelve and
+ * skipped the new one; flipping that single field to 0x07FF made it appear.
+ *
+ * Pass this as writeFile's accessBits when building distribution media;
+ * ACCESS_DEFAULT (or the owning user's own default) is right for a file a
+ * user creates for itself on a live machine.
+ */
+export const ACCESS_PUBLIC_READ = 0x07ff;
+
 export class ObjectEntry {
   header: number = OBJECT_ENTRY_IN_USE;
   headerWord: number = OBJECT_ENTRY_IN_USE << 8;

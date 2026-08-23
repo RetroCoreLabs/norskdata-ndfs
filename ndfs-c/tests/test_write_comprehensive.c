@@ -1715,6 +1715,81 @@ static int test_quota_fsck_reports_no_warnings(void)
     return 0;
 }
 
+/* ndfs_write_file_full()'s access_bits parameter must override the owning
+ * user's inherited default_file_access outright, on a NEWLY CREATED file.
+ *
+ * ndfs_ue_init() gives every user this library creates default_file_access
+ * 0x04FF (PUBLIC READ already granted), so the invisible-to-SYSTEM bug this
+ * parameter exists for only shows up against an OLDER-style user entry whose
+ * default is 0x03FF (PUBLIC nothing) -- exactly what a real SINTRAN pack can
+ * carry. That is reproduced here by patching SYSTEM's on-disk
+ * default_file_access directly (offset+40, see user_entry.c), the same way
+ * a genuinely old pack would have it, rather than asserting something this
+ * library would never produce on its own. */
+static int test_write_full_access_bits_override_wins_over_inherited_default(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_360KB, "ACCOVER");
+    ndfs_user_entry_t *users = NULL;
+    size_t user_count = 0;
+    uint8_t system_index = 0xFF;
+    size_t u;
+    const ndfs_master_block_t *mb = NULL;
+    uint8_t *buf = NULL;
+    size_t buf_size = 0;
+    uint32_t user_data_block;
+    size_t default_access_off;
+    ndfs_filesystem_t *fs2 = NULL;
+    uint8_t data[16];
+    ndfs_object_entry_t explicit_entry, inherited_entry;
+    uint16_t override_bits = NDFS_ACCESS_PUBLIC_READ;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    fill_nonzero_pattern(data, sizeof(data), 1);
+
+    TEST_ASSERT_OK(ndfs_get_users(fs, &users, &user_count));
+    for (u = 0; u < user_count; u++) {
+        if (strcmp(users[u].user_name, "SYSTEM") == 0) {
+            system_index = users[u].user_index;
+            break;
+        }
+    }
+    ndfs_free_users(users);
+    TEST_ASSERT(system_index != 0xFF);
+
+    TEST_ASSERT_OK(ndfs_get_master_block(fs, &mb));
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &buf, &buf_size));
+
+    user_data_block = ndfs_read_u32be(
+        buf, (size_t)mb->user_file_ptr.block_id * NDFS_PAGE_SIZE
+             + (size_t)(system_index / 32) * 4);
+    TEST_ASSERT(user_data_block != 0);
+    default_access_off = (size_t)user_data_block * NDFS_PAGE_SIZE
+                        + (size_t)(system_index % 32) * 64 + 40;
+    TEST_ASSERT_EQUAL_UINT(0x04FFu, ndfs_read_u16be(buf, default_access_off));
+    ndfs_write_u16be(buf, default_access_off, 0x03FFu); /* the restrictive, PUBLIC-nothing shape */
+
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(buf, buf_size, false, &fs2));
+    free(buf);
+
+    /* Without an override, the new file inherits the (now-restrictive)
+     * default unchanged -- proves the override is opt-in, not a global
+     * behavior change. */
+    TEST_ASSERT_OK(ndfs_write_file(fs2, "SYSTEM/INHERIT:DATA", data, sizeof(data)));
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs2, "INHERIT:DATA", "SYSTEM", &inherited_entry));
+    TEST_ASSERT_EQUAL_UINT(0x03FFu, inherited_entry.access_bits);
+
+    /* With NDFS_ACCESS_PUBLIC_READ passed explicitly, the new file gets THAT
+     * instead, regardless of what SYSTEM's own default now says. */
+    TEST_ASSERT_OK(ndfs_write_file_full(fs2, "SYSTEM/PUBRD:DATA", data, sizeof(data),
+                                        NDFS_PARITY_NONE, NULL, &override_bits));
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs2, "PUBRD:DATA", "SYSTEM", &explicit_entry));
+    TEST_ASSERT_EQUAL_UINT(NDFS_ACCESS_PUBLIC_READ, explicit_entry.access_bits);
+
+    ndfs_close(fs2);
+    ndfs_close(fs);
+    return 0;
+}
+
 void run_write_comprehensive_tests(void)
 {
     TEST_SUITE_BEGIN("Write Comprehensive Tests");
@@ -1757,4 +1832,5 @@ void run_write_comprehensive_tests(void)
     RUN_TEST(test_quota_overwrite_grow_then_shrink);
     RUN_TEST(test_quota_subindexed_sparse_charges_only_real);
     RUN_TEST(test_quota_fsck_reports_no_warnings);
+    RUN_TEST(test_write_full_access_bits_override_wins_over_inherited_default);
 }

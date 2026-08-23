@@ -58,6 +58,22 @@ extern "C" {
  * PUBLIC none (0x3FF). Matches the RetroCore reference implementation. */
 #define NDFS_ACCESS_DEFAULT 0x03FFu
 
+/* What a real ND PRODUCT FLOPPY carries on every file: the same OWN/FRIEND
+ * rights as NDFS_ACCESS_DEFAULT plus PUBLIC READ.
+ *
+ * MEASURED on 210580B01-XX-01D (genuine ND Ethernet distribution floppy): all
+ * 12 files read 0x07FF. This is not cosmetic -- PUBLIC is the tier every user
+ * who is neither the owner nor a friend falls into, SYSTEM included, so with
+ * PUBLIC = 0 the files are invisible from any other user and @LIST-FILES
+ * prints nothing while the pack itself verifies clean. Proved by adding one
+ * 0x03FF file beside those 12: SINTRAN listed the original twelve and
+ * skipped the new one; flipping that single field to 0x07FF made it appear.
+ *
+ * Pass this as ndfs_write_file_full()'s access_bits when building
+ * distribution media; NDFS_ACCESS_DEFAULT (or the owning user's own default)
+ * is right for a file a user creates for itself on a live machine. */
+#define NDFS_ACCESS_PUBLIC_READ 0x07FFu
+
 /** 64-byte object (file) entry. */
 typedef struct {
     uint8_t              header;        /**< Byte 0: bit7 = in use. */

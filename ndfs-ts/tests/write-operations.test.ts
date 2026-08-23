@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { NdfsFileSystem } from '../src/ndfs-filesystem.js';
 import { ImageTemplate } from '../src/types.js';
 import { NDFS_PAGE_SIZE } from '../src/constants.js';
+import { ACCESS_PUBLIC_READ } from '../src/object-entry.js';
 
 function createFS(pages: number = 200): NdfsFileSystem {
   return NdfsFileSystem.createImage({
@@ -162,5 +163,35 @@ describe('WriteOperations', () => {
 
     const content = new TextDecoder().decode(fs.readFile('SYSTEM/NEWNAME:TEXT'));
     expect(content).toBe('renamed content');
+  });
+
+  // writeFile's accessBits parameter must override the owning user's
+  // inherited defaultFileAccess outright, on a NEWLY CREATED file.
+  //
+  // Set explicitly to the restrictive, PUBLIC-nothing shape (0x03FF) rather
+  // than relied on as-created: unlike ndfs-c's ndfs_ue_init (which stamps a
+  // fresh user 0x04FF, granting PUBLIC READ), ndfs-ts's image creator
+  // currently never writes defaultFileAccess for SYSTEM at all, so a
+  // freshly created image's SYSTEM already reads 0 here -- a real,
+  // pre-existing C/TS divergence, tracked separately, that this test
+  // deliberately does not depend on either way. getUser returns the live
+  // entry, not a copy, so mutating it here is enough.
+  it('accessBits override wins over an inherited restrictive default', () => {
+    const fs = createFS();
+    const system = fs.getUser(0)!;
+    system.defaultFileAccess = 0x03ff; // the restrictive, PUBLIC-nothing shape
+
+    // Without an override, the new file inherits the (now-restrictive)
+    // default unchanged -- proves the override is opt-in, not a global
+    // behavior change.
+    fs.writeFile('SYSTEM/INHERIT:DATA', new TextEncoder().encode('x'));
+    const inherited = fs.getObjectEntry('INHERIT', 'SYSTEM')!;
+    expect(inherited.accessBits).toBe(0x03ff);
+
+    // With ACCESS_PUBLIC_READ passed explicitly, the new file gets THAT
+    // instead, regardless of what SYSTEM's own default now says.
+    fs.writeFile('SYSTEM/PUBRD:DATA', new TextEncoder().encode('x'), 'none', undefined, ACCESS_PUBLIC_READ);
+    const explicit = fs.getObjectEntry('PUBRD', 'SYSTEM')!;
+    expect(explicit.accessBits).toBe(ACCESS_PUBLIC_READ);
   });
 });
