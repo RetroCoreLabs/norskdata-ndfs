@@ -230,6 +230,7 @@ class NdfsFileSystem:
         file_data: Union[bytes, bytearray, memoryview],
         parity: str = "none",
         holes: Optional[Sequence[int]] = None,
+        access_bits: Optional[int] = None,
     ) -> None:
         """Write (create or overwrite) a file.
 
@@ -248,6 +249,31 @@ class NdfsFileSystem:
             holes: Logical page indices to leave unallocated, or None for a
                 fully allocated file. The only legitimate source is the holes
                 recorded from an original -- the XAT sidecar's "ndfs.holes".
+            access_bits: 15-bit access word to stamp on a NEWLY CREATED file,
+                or None to inherit the owning user's default file access.
+
+                Layout (offset 26 of the object entry, uint16 BE):
+
+                    bits 14-10  PUBLIC   5 bits
+                    bits  9-5   FRIEND   5 bits
+                    bits  4-0   OWN      5 bits
+
+                and inside each 5-bit tier:
+
+                    bit 4 Delete | bit 3 Execute/Common | bit 2 Append
+                    bit 1 Write  | bit 0 Read
+
+                PASS THIS WHEN BUILDING DISTRIBUTION MEDIA. A user created by a
+                real SINTRAN carries default_file_access 0x03FF -- owner and
+                friends everything, PUBLIC NOTHING -- so files inherited from it
+                are invisible to every other user, SYSTEM included, and
+                @LIST-FILES from SYSTEM prints nothing at all while the pack
+                itself is perfectly valid. Measured on a real ND product floppy
+                (210580B01-XX-01D): every file on it carries 0x07FF, which is
+                the same owner/friend rights plus PUBLIC READ. Adding one file
+                with 0x03FF beside them made SINTRAN list the original twelve
+                and silently skip the thirteenth; changing that single field to
+                0x07FF made it appear.
         """
         holes = frozenset(holes) if holes else None
         from ndfs.parity import set_parity as _set
@@ -309,7 +335,7 @@ class NdfsFileSystem:
         if existing is not None:
             self._update_existing_file(existing, user, file_data, holes)
         else:
-            self._create_new_file(object_name, file_type, user, file_data, holes)
+            self._create_new_file(object_name, file_type, user, file_data, holes, access_bits)
         # _update_existing_file / _create_new_file perform their own surgical
         # metadata writes (object page, owner user page, bitmap).
 
@@ -1592,6 +1618,7 @@ class NdfsFileSystem:
         user: UserEntry,
         file_data: Union[bytes, bytearray, memoryview],
         holes: Optional[frozenset] = None,
+        access_bits: Optional[int] = None,
     ) -> None:
         """Create a new file on the filesystem."""
         data_pages = math.ceil(len(file_data) / NDFS_PAGE_SIZE)
@@ -1660,8 +1687,15 @@ class NdfsFileSystem:
         # file_type_flags: SINTRAN uses the same FT_INDEXED flag for both
         # Indexed and SubIndexed layouts -- the actual layout is carried by the
         # BlockPointer's own type field, not by a separate flag bit.
-        entry.access_bits = (user.default_file_access & 0x7FFF) \
-            if user.default_file_access else ACCESS_DEFAULT
+        # An EXPLICIT access_bits always wins: inheriting is right for a file
+        # created on a live machine, but wrong for distribution media, where the
+        # owning user's default may grant PUBLIC nothing and make every file
+        # invisible to SYSTEM. See write_file's docstring for the measurement.
+        if access_bits is not None:
+            entry.access_bits = access_bits & 0x7FFF
+        else:
+            entry.access_bits = (user.default_file_access & 0x7FFF) \
+                if user.default_file_access else ACCESS_DEFAULT
         entry.file_type_flags = FT_INDEXED
         # object_index already encodes [user|fileEntry]; the object-index word
         # and the self-referential version chain all equal it.

@@ -61,8 +61,33 @@ FT_ALLOCATED = 1 << 5
 FT_MAGTAPE = 1 << 6
 FT_LIBRARY = 1 << 7
 
+# Access bits live at object-entry offset 26 as a 15-bit big-endian word:
+#
+#     bits 14-10  PUBLIC   5 bits
+#     bits  9-5   FRIEND   5 bits
+#     bits  4-0   OWN      5 bits
+#
+# and inside each 5-bit tier:
+#
+#     bit 4 Delete | bit 3 Execute/Common | bit 2 Append | bit 1 Write | bit 0 Read
+#
 # Default access for a new file: OWN + FRIEND all rights, PUBLIC none.
 ACCESS_DEFAULT = 0x03FF
+
+# What a real ND PRODUCT FLOPPY carries on every file: the same owner and friend
+# rights plus PUBLIC READ.
+#
+# MEASURED on 210580B01-XX-01D (genuine ND Ethernet distribution floppy): all 12
+# files read 0x07FF. This is not cosmetic. PUBLIC is the tier every user who is
+# neither the owner nor a friend falls into -- SYSTEM included -- so with PUBLIC
+# = 0 the files are invisible from any other user and @LIST-FILES prints nothing
+# while the pack itself verifies clean. Proved by adding one 0x03FF file beside
+# those 12: SINTRAN listed the original twelve and skipped the new one, and
+# flipping that single field to 0x07FF made it appear.
+#
+# Use this when building distribution media; ACCESS_DEFAULT is for a file created
+# by a user for its own use on a live machine.
+ACCESS_PUBLIC_READ = 0x07FF
 
 
 def compute_file_number(object_index: int, user_index: int) -> int:
