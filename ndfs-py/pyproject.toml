@@ -1,6 +1,6 @@
 [project]
 name = "norskdata-ndfs"
-version = "0.0.6"
+version = "0.0.7"
 description = "NDFS (Norsk Data File System) read/write library for Sintran-III disk images"
 readme = "README.md"
 license = {text = "MIT"}

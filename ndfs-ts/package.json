@@ -1,6 +1,6 @@
 {
   "name": "norskdata-ndfs",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "NDFS (Norsk Data File System) read/write library for Sintran-III disk images",
   "type": "module",
   "main": "dist/index.js",

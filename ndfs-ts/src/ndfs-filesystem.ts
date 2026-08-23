@@ -65,6 +65,8 @@ export class NdfsFileSystem {
   private _unaligned: boolean = false;
   private masterBlock: MasterBlock;
   private bitFile: BitFile = new BitFile();
+  /** bit-file pages that could not be read on load - see getDamageReport() */
+  private unreadableBitFilePages = 0;
   private userFile: UserFile = new UserFile();
   private objectFile: ObjectFile = new ObjectFile();
 
@@ -1084,6 +1086,24 @@ export class NdfsFileSystem {
     return sintran.enumerateCandidates(this.readFile(path));
   }
 
+  /**
+   * What could not be read off this image.
+   *
+   * All three counts are zero on an intact floppy. Any of them above zero
+   * means the listing is what survived a damaged one: each lost object page
+   * took up to 32 file entries with it, each lost user page took up to 32
+   * user names, and a lost bit-file page leaves the pages it covered reading
+   * as free. Nothing here says WHICH entries were lost - that cannot be known
+   * from the media - only that the picture is incomplete.
+   */
+  getDamageReport(): { objectPages: number; userPages: number; bitFilePages: number } {
+    return {
+      objectPages: this.objectFile.unreadablePages,
+      userPages: this.userFile.unreadablePages,
+      bitFilePages: this.unreadableBitFilePages,
+    };
+  }
+
   private readPage(blockId: number): Uint8Array {
     const offset = blockId * NDFS_PAGE_SIZE;
     if (offset + NDFS_PAGE_SIZE > this.data.length) {
@@ -1149,10 +1169,17 @@ export class NdfsFileSystem {
       const bitmapPages = Math.ceil(bitmapBytes / NDFS_PAGE_SIZE);
 
       // Read contiguous bitmap pages
+      // A bitmap page that cannot be read leaves its own pages reading as
+      // free; it must not cost the file listing, which is what the disk is
+      // kept for. The pages that do read are loaded.
       const bitmapData = new Uint8Array(bitmapPages * NDFS_PAGE_SIZE);
       for (let i = 0; i < bitmapPages; i++) {
-        const page = this.readPage(mb.bitFilePointer.blockId + i);
-        bitmapData.set(page, i * NDFS_PAGE_SIZE);
+        try {
+          const page = this.readPage(mb.bitFilePointer.blockId + i);
+          bitmapData.set(page, i * NDFS_PAGE_SIZE);
+        } catch {
+          this.unreadableBitFilePages++;
+        }
       }
       this.bitFile.loadBitmap(bitmapData.subarray(0, bitmapBytes));
     }

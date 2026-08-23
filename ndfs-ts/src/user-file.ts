@@ -24,6 +24,12 @@ export class UserFile {
   indexPointer: BlockPointer | null = null;
   private entries: Map<number, UserEntry> = new Map();
 
+  /**
+   * User-file pages that could not be read on the last load. Greater than
+   * zero means some users on this floppy have no name here.
+   */
+  unreadablePages = 0;
+
   /** Get all user entries as an array. */
   getUsers(): UserEntry[] {
     const result: UserEntry[] = [];
@@ -115,13 +121,23 @@ export class UserFile {
     readPage: (blockId: number) => Uint8Array,
   ): void {
     this.entries.clear();
+    this.unreadablePages = 0;
 
     // Read up to 8 pointers from the index block
     for (let i = 0; i < MAX_USER_FILE_POINTERS; i++) {
       const ptr = BlockPointer.fromBytes(indexPage, i * 4);
       if (!ptr.isValid()) continue;
 
-      const dataPage = readPage(ptr.blockId);
+      // One unreadable user page costs only the users on it. The page reads
+      // fail on a damaged floppy, and the users named by the other pages are
+      // still there to resolve object entries against.
+      let dataPage: Uint8Array;
+      try {
+        dataPage = readPage(ptr.blockId);
+      } catch {
+        this.unreadablePages++;
+        continue;
+      }
 
       // Parse up to 32 user entries per page
       for (let j = 0; j < ENTRIES_PER_PAGE; j++) {

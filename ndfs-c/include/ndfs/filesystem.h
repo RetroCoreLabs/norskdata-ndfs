@@ -528,6 +528,29 @@ ndfs_error_t ndfs_get_free_pages(const ndfs_filesystem_t *fs, uint32_t *out);
  */
 ndfs_error_t ndfs_get_used_pages(const ndfs_filesystem_t *fs, uint32_t *out);
 
+/**
+ * Pages that could not be read when the image was loaded.
+ *
+ * All three counts are zero on an intact image. Any of them above zero means
+ * the listing is what survived a damaged one: each lost object page took up
+ * to 32 file entries with it, each lost user page took up to 32 user names,
+ * and a lost bit-file page leaves the pages it covered reading as free.
+ * Nothing here says WHICH entries were lost - that cannot be known from the
+ * media - only that the picture is incomplete.
+ */
+typedef struct {
+    uint32_t object_pages;
+    uint32_t user_pages;
+    uint32_t bit_file_pages;
+} ndfs_damage_report_t;
+
+/**
+ * Read the damage counts of a loaded filesystem.
+ * @param out  Receives the counts.
+ */
+ndfs_error_t ndfs_get_damage_report(const ndfs_filesystem_t *fs,
+                                    ndfs_damage_report_t *out);
+
 /* ── Low-level object access ────────────────────────────────────── */
 
 /**

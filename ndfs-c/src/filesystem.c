@@ -89,6 +89,11 @@ struct ndfs_filesystem {
     ndfs_object_entry_t *objects;
     size_t              object_count;
     size_t              object_capacity;
+
+    /* Pages that could not be read on load - see ndfs_get_damage_report().
+     * All zero on an intact image; above zero means the listing is what
+     * survived a damaged one. */
+    ndfs_damage_report_t damage;
 };
 
 /* ── Forward declarations ────────────────────────────────────────── */
@@ -538,7 +543,8 @@ static ndfs_error_t load_structures(struct ndfs_filesystem *fs)
             if (!ndfs_bp_is_valid(&ptr)) continue;
 
             data_page = read_page(fs, ptr.block_id);
-            if (!data_page) continue;
+            /* One unreadable user page costs only the users on it. */
+            if (!data_page) { fs->damage.user_pages++; continue; }
 
             for (j = 0; j < NDFS_ENTRIES_PER_PAGE; j++) {
                 ndfs_user_entry_t ue;
@@ -575,7 +581,11 @@ static ndfs_error_t load_structures(struct ndfs_filesystem *fs)
                     continue;
                 }
                 dp = read_page(fs, ptr.block_id);
-                if (!dp) { global_idx += NDFS_ENTRIES_PER_PAGE; continue; }
+                /* An unreadable data page loses its own 32 entries and
+                 * nothing else. The slots are still counted, so every entry
+                 * after it keeps the object index it has on the media. */
+                if (!dp) { fs->damage.object_pages++;
+                           global_idx += NDFS_ENTRIES_PER_PAGE; continue; }
 
                 for (j = 0; j < NDFS_ENTRIES_PER_PAGE; j++) {
                     ndfs_object_entry_t oe;
@@ -618,7 +628,9 @@ static ndfs_error_t load_structures(struct ndfs_filesystem *fs)
                 if (!ndfs_bp_is_valid(&idx_ptr)) continue;
 
                 idx_page = read_page(fs, idx_ptr.block_id);
-                if (!idx_page) continue;
+                /* One lost index page must not cost the entries the other
+                 * index pages still name. */
+                if (!idx_page) { fs->damage.object_pages++; continue; }
                 /* idx_page held across its 512 data-page reads -- pin it too
                  * (sub_idx + idx + data = the deepest 3-page live chain). */
                 cache_pin(fs, idx_ptr.block_id);
@@ -631,7 +643,10 @@ static ndfs_error_t load_structures(struct ndfs_filesystem *fs)
                         continue;
                     }
                     dp = read_page(fs, ptr.block_id);
-                    if (!dp) { global_idx += NDFS_ENTRIES_PER_PAGE; continue; }
+                    /* Same rule under a sub-index: the lost page costs its own
+                     * 32 entries only. */
+                    if (!dp) { fs->damage.object_pages++;
+                               global_idx += NDFS_ENTRIES_PER_PAGE; continue; }
 
                     for (j = 0; j < NDFS_ENTRIES_PER_PAGE; j++) {
                         ndfs_object_entry_t oe;
@@ -702,8 +717,12 @@ static ndfs_error_t load_structures(struct ndfs_filesystem *fs)
 
             for (i = 0; i < bitmap_pages; i++) {
                 const uint8_t *page = read_page(fs, mb->bit_file_ptr.block_id + (uint32_t)i);
+                /* A bitmap page that cannot be read leaves its own pages
+                 * reading as free; it must not cost the file listing. */
                 if (page) {
                     memcpy(tmp + i * NDFS_PAGE_SIZE, page, NDFS_PAGE_SIZE);
+                } else {
+                    fs->damage.bit_file_pages++;
                 }
             }
             ndfs_bf_load(&fs->bit_file, tmp, bitmap_bytes);
@@ -3379,6 +3398,14 @@ ndfs_error_t ndfs_get_used_pages(const ndfs_filesystem_t *fs, uint32_t *out)
 {
     if (!fs || !out) return NDFS_ERR_NULL_PTR;
     *out = ndfs_bf_count_used(&fs->bit_file);
+    return NDFS_OK;
+}
+
+ndfs_error_t ndfs_get_damage_report(const ndfs_filesystem_t *fs,
+                                    ndfs_damage_report_t *out)
+{
+    if (!fs || !out) return NDFS_ERR_NULL_PTR;
+    *out = fs->damage;
     return NDFS_OK;
 }
 

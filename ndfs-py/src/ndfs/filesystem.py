@@ -100,6 +100,8 @@ class NdfsFileSystem:
         self._master_block.image_size = pages
 
         self._bit_file: BitFile = BitFile()
+        # bit-file pages that could not be read on load - see get_damage_report
+        self._unreadable_bit_file_pages: int = 0
         self._user_file: UserFile = UserFile()
         self._object_file: ObjectFile = ObjectFile()
 
@@ -899,6 +901,22 @@ class NdfsFileSystem:
             return []
         return sintran.enumerate_candidates(self.read_file(path))
 
+    def get_damage_report(self) -> Dict[str, int]:
+        """What could not be read off this image.
+
+        All three counts are zero on an intact floppy. Any of them above zero
+        means the listing is what survived a damaged one: each lost object
+        page took up to 32 file entries with it, each lost user page took up
+        to 32 user names, and a lost bit-file page leaves the pages it covered
+        reading as free. Nothing here says WHICH entries were lost - that
+        cannot be known from the media - only that the picture is incomplete.
+        """
+        return {
+            "object_pages": self._object_file.unreadable_pages,
+            "user_pages": self._user_file.unreadable_pages,
+            "bit_file_pages": self._unreadable_bit_file_pages,
+        }
+
     def _read_page(self, block_id: int) -> memoryview:
         """Read a page from the image buffer."""
         offset = block_id * NDFS_PAGE_SIZE
@@ -983,9 +1001,16 @@ class NdfsFileSystem:
             bitmap_pages = math.ceil(bitmap_bytes / NDFS_PAGE_SIZE)
 
             # Read contiguous bitmap pages
+            # A bitmap page that cannot be read leaves its own pages reading
+            # as free; it must not cost the file listing, which is what the
+            # disk is kept for. The pages that do read are loaded.
             bitmap_data = bytearray(bitmap_pages * NDFS_PAGE_SIZE)
             for i in range(bitmap_pages):
-                page = self._read_page(mb.bit_file_pointer.block_id + i)
+                try:
+                    page = self._read_page(mb.bit_file_pointer.block_id + i)
+                except Exception:
+                    self._unreadable_bit_file_pages += 1
+                    continue
                 bitmap_data[i * NDFS_PAGE_SIZE:(i + 1) * NDFS_PAGE_SIZE] = page
             self._bit_file.load_bitmap(bitmap_data[:bitmap_bytes])
 

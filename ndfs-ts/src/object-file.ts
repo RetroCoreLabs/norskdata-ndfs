@@ -29,6 +29,14 @@ export class ObjectFile {
   private entries: Map<number, ObjectEntry> = new Map();
   private nextIndex: number = 0;
 
+  /**
+   * Object-file pages that could not be read on the last load.
+   *
+   * Greater than zero means the listing is what survived on a damaged floppy,
+   * not the whole file list - each lost page took up to 32 entries with it.
+   */
+  unreadablePages = 0;
+
   /** Get all object entries. */
   getObjects(): ObjectEntry[] {
     const result: ObjectEntry[] = [];
@@ -328,6 +336,7 @@ export class ObjectFile {
     readPage: (blockId: number) => Uint8Array,
   ): void {
     this.entries.clear();
+    this.unreadablePages = 0;
     this.indexPointer = pointer;
     let globalObjectIndex = 0;
 
@@ -345,7 +354,15 @@ export class ObjectFile {
         const indexPtr = BlockPointer.fromBytes(subIndexPage, i * 4);
         if (!indexPtr.isValid()) continue;
 
-        const indexPage = readPage(indexPtr.blockId);
+        // A page of a damaged floppy cannot be read at all, and one lost
+        // index page must not cost the entries the other pages still name.
+        let indexPage: Uint8Array;
+        try {
+          indexPage = readPage(indexPtr.blockId);
+        } catch {
+          this.unreadablePages++;
+          continue;
+        }
         globalObjectIndex = this.loadObjectsFromIndexBlock(
           indexPage,
           readPage,
@@ -372,7 +389,17 @@ export class ObjectFile {
         continue;
       }
 
-      const dataPage = readPage(ptr.blockId);
+      // Same again one level down: an unreadable data page loses its own 32
+      // entries and nothing else. The slots are still counted, so every entry
+      // after it keeps the object index it has on the media.
+      let dataPage: Uint8Array;
+      try {
+        dataPage = readPage(ptr.blockId);
+      } catch {
+        this.unreadablePages++;
+        objectIndex += ENTRIES_PER_PAGE;
+        continue;
+      }
       for (let j = 0; j < ENTRIES_PER_PAGE; j++) {
         const entry = ObjectEntry.fromBytes(dataPage, j * ENTRY_SIZE);
         if (entry !== null) {

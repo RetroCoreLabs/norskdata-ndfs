@@ -10,7 +10,7 @@
 #include <ndfs/ndfs.h>
 #include <stdbool.h>
 
-#define NDTOOL_VERSION "0.0.6"
+#define NDTOOL_VERSION "0.0.7"
 
 /* Policy when a target file already exists (import into image, or extract to
  * host). Default is DENY: skip the file and keep going. */

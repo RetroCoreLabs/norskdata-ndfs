@@ -34,12 +34,16 @@ _BufType = Union[bytes, bytearray, memoryview]
 class ObjectFile:
     """Manages the collection of NDFS file (object) entries."""
 
-    __slots__ = ("index_pointer", "_entries", "_next_index")
+    __slots__ = ("index_pointer", "_entries", "_next_index", "unreadable_pages")
 
     def __init__(self) -> None:
         self.index_pointer: Optional[BlockPointer] = None
         self._entries: Dict[int, ObjectEntry] = {}
         self._next_index: int = 0
+        # Object-file pages that could not be read on the last load. Greater
+        # than zero means the listing is what survived on a damaged floppy,
+        # not the whole file list - each lost page took up to 32 entries.
+        self.unreadable_pages: int = 0
 
     def get_objects(self) -> List[ObjectEntry]:
         """Get all object entries."""
@@ -256,6 +260,7 @@ class ObjectFile:
             read_page: Callback to read a page by block ID.
         """
         self._entries.clear()
+        self.unreadable_pages = 0
         self.index_pointer = pointer
         global_object_index = 0
 
@@ -270,7 +275,14 @@ class ObjectFile:
                 index_ptr = BlockPointer.from_bytes(sub_index_page, i * 4)
                 if not index_ptr.is_valid():
                     continue
-                index_page = read_page(index_ptr.block_id)
+                # A page of a damaged floppy cannot be read at all, and one
+                # lost index page must not cost the entries the other pages
+                # still name.
+                try:
+                    index_page = read_page(index_ptr.block_id)
+                except Exception:
+                    self.unreadable_pages += 1
+                    continue
                 global_object_index = self._load_objects_from_index_block(
                     index_page, read_page, global_object_index
                 )
@@ -346,7 +358,15 @@ class ObjectFile:
                 object_index += ENTRIES_PER_PAGE
                 continue
 
-            data_page = read_page(ptr.block_id)
+            # Same again one level down: an unreadable data page loses its own
+            # 32 entries and nothing else. The slots are still counted, so
+            # every entry after it keeps the object index it has on the media.
+            try:
+                data_page = read_page(ptr.block_id)
+            except Exception:
+                self.unreadable_pages += 1
+                object_index += ENTRIES_PER_PAGE
+                continue
             for j in range(ENTRIES_PER_PAGE):
                 entry = ObjectEntry.from_bytes(data_page, j * ENTRY_SIZE)
                 if entry is not None:

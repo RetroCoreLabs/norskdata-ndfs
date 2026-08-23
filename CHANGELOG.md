@@ -2,6 +2,46 @@
 
 All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndtool`).
 
+## 0.0.7 - 2026-08-23
+
+### Fixed - one unreadable page hid every file on the floppy
+
+0.0.6 stopped a damaged user file from taking the listing down. The same thing
+was still true one level lower: a single page that could not be read anywhere
+in the object file, or in the bit file, failed the whole load. A lost page must
+cost only what was written on that page.
+
+* `ndfs-ts` / `ndfs-py` - an object-file DATA page that cannot be read now
+  skips its own 32 entries and carries on, and the slots are still counted so
+  every entry after it keeps the object index it has on the media. An index
+  page under a sub-index is skipped the same way. A user-file data page is
+  skipped per page instead of abandoning the whole user file, so users named
+  by the pages that do read survive. Bit-file pages that cannot be read leave
+  their own pages reading as free instead of failing the load.
+* `ndfs-c` - already skipped all four; it now counts them like the other two.
+
+The top-level object-file index page is deliberately still fatal in all three:
+if that page is gone there is nothing left to name the files.
+
+### Added - `getDamageReport()` / `get_damage_report()` / `ndfs_get_damage_report()`
+
+Three counts - object pages, user pages, bit-file pages - all zero on an intact
+image. Above zero the listing is what survived a damaged floppy, and a caller
+that publishes the listing can say so. Nothing says WHICH entries were lost;
+that cannot be known from the media.
+
+### Tests
+
+`ndfs-ts/tests/damaged-media.test.ts`, `ndfs-py/tests/test_damaged_media.py`
+and `ndfs-c/tests/test_damaged_media.c` - the same 8 cases, same names, same
+numbers in all three. A 360 KB floppy is built with 40 files (32 on the first
+object data page, 8 on the second) and a pointer is aimed at a page outside the
+image, which is how the failure reaches the loader on real media.
+
+Measured over an archive of 1102 floppies: 13 images that reported nothing now
+parse. That is not the same as 13 readable disks - the confirmation that a
+listing is real belongs to the caller, and only two of the 13 have one.
+
 ## 0.0.6 - 2026-08-18
 
 ### Fixed - a damaged user file hid the whole file listing

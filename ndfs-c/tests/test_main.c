@@ -33,6 +33,7 @@ extern void run_parity_tests(void);
 extern void run_wildmatch_tests(void);
 extern void run_golden_tests(void);
 extern void run_backend_stdio_tests(void);
+extern void run_damaged_media_tests(void);
 
 int main(void)
 {
@@ -60,6 +61,7 @@ int main(void)
     run_wildmatch_tests();
     run_golden_tests();
     run_backend_stdio_tests();
+    run_damaged_media_tests();
 
     TEST_SUITE_REPORT();
 

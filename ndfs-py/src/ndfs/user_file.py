@@ -30,11 +30,14 @@ _BufType = Union[bytes, bytearray, memoryview]
 class UserFile:
     """Manages the collection of NDFS user entries."""
 
-    __slots__ = ("index_pointer", "_entries")
+    __slots__ = ("index_pointer", "_entries", "unreadable_pages")
 
     def __init__(self) -> None:
         self.index_pointer: Optional[BlockPointer] = None
         self._entries: Dict[int, UserEntry] = {}
+        # User-file pages that could not be read on the last load. Greater
+        # than zero means some users on this floppy have no name here.
+        self.unreadable_pages: int = 0
 
     def get_users(self) -> List[UserEntry]:
         """Get all user entries as a list."""
@@ -119,6 +122,7 @@ class UserFile:
             read_page: Callback to read a data page by block ID.
         """
         self._entries.clear()
+        self.unreadable_pages = 0
 
         # Read up to 8 pointers from the index block
         for i in range(MAX_USER_FILE_POINTERS):
@@ -126,7 +130,14 @@ class UserFile:
             if not ptr.is_valid():
                 continue
 
-            data_page = read_page(ptr.block_id)
+            # One unreadable user page costs only the users on it. The page
+            # reads fail on a damaged floppy, and the users named by the other
+            # pages are still there to resolve object entries against.
+            try:
+                data_page = read_page(ptr.block_id)
+            except Exception:
+                self.unreadable_pages += 1
+                continue
 
             # Parse up to 32 user entries per page
             for j in range(ENTRIES_PER_PAGE):

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(ndfs VERSION 0.0.6 LANGUAGES C)
+project(ndfs VERSION 0.0.7 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -80,6 +80,7 @@ set(TEST_SOURCES
     tests/test_wildmatch.c
     tests/test_golden.c
     tests/test_backend_stdio.c
+    tests/test_damaged_media.c
 )
 
 add_executable(ndfs_tests ${TEST_SOURCES})
