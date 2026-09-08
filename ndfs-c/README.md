@@ -302,4 +302,4 @@ See [NDFS-FORMAT.md](../docs/NDFS-FORMAT.md) for the complete binary format spec
 
 ## License
 
-MIT - Copyright (c) 1985-2026 Ronny Hansen, HackerCorp Labs
+MIT - Copyright (c) 1985-2026 Ronny Hansen, RetroCore Labs

@@ -1,7 +1,7 @@
 # norskdata-ndfs
 
-[![Release builds](https://github.com/HackerCorpLabs/norskdata-ndfs/actions/workflows/release.yml/badge.svg)](https://github.com/HackerCorpLabs/norskdata-ndfs/actions/workflows/release.yml)
-[![Latest release](https://img.shields.io/github/v/release/HackerCorpLabs/norskdata-ndfs?sort=semver)](https://github.com/HackerCorpLabs/norskdata-ndfs/releases/latest)
+[![Release builds](https://github.com/RetroCoreLabs/norskdata-ndfs/actions/workflows/release.yml/badge.svg)](https://github.com/RetroCoreLabs/norskdata-ndfs/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/RetroCoreLabs/norskdata-ndfs?sort=semver)](https://github.com/RetroCoreLabs/norskdata-ndfs/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Read and write NDFS (Norsk Data File System) disk images from Sintran-III minicomputers.
@@ -240,11 +240,11 @@ make help       # list all targets
 
 Pre-built `ndtool` binaries for **Windows (x64)**, **Linux (x64 / arm64)**, and
 **macOS (Apple Silicon)** are attached to every
-[GitHub Release](https://github.com/HackerCorpLabs/norskdata-ndfs/releases/latest).
+[GitHub Release](https://github.com/RetroCoreLabs/norskdata-ndfs/releases/latest).
 Each archive contains a single self-contained binary with no external runtime
 dependencies. Releases are built automatically by the
 [release workflow](.github/workflows/release.yml) when a `v*` tag is pushed.
 
 ## License
 
-MIT - Copyright (c) 1985-2026 Ronny Hansen, [HackerCorp Labs](https://github.com/HackerCorpLabs)
+MIT - Copyright (c) 1985-2026 Ronny Hansen, [RetroCore Labs](https://github.com/RetroCoreLabs)
