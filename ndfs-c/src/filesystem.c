@@ -1419,7 +1419,7 @@ static uint32_t count_real_data_pages_in_buffer(const uint8_t *file_data,
  * NDFS-FORMAT.md "Sub-Indexed (Type 10)". This mirrors the already-audited
  * TS port's allocateAndWriteData()/writeDataPageToIndex() algorithm shape.
  *
- * On success, *out_top_block_id/*out_pointer_type are what the caller must
+ * On success, *out_top_block_id and *out_pointer_type are what the caller must
  * store as the object entry's file_pointer, and *out_struct_pages is the
  * number of structural (non-data) pages consumed -- 1 for Indexed, or
  * 1 + ceil(data_pages/512) for SubIndexed (the sub-index block plus one
