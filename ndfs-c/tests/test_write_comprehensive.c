@@ -951,6 +951,72 @@ static int test_subindexed_sparse_holes(void)
     return 0;
 }
 
+/* SINTRAN III leaves the sub-index entry of a group with no page in it EMPTY - no group
+ * index block at all. Measured 2026-10-14 on a domain the ND Linker B01 wrote under
+ * SINTRAN III (nd100x, ND-5000): sub-index entries 0, 2, 4 and 6 set, 1, 3 and 5 empty.
+ * Our writer always makes every group's index block, so the test writes the file and
+ * then clears entry 1, as SINTRAN would have written it. Every page behind the empty
+ * entry must still be read at its own place: page 1030 at byte 1030 * 2048, not 512
+ * pages earlier, and the block list must carry the 512 holes. */
+static int test_subindexed_empty_group_entry(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_SMD_75MB, "SUBEMPTY");
+    ndfs_filesystem_t *fs2 = NULL;
+    uint32_t data_pages = 1500;          /* groups 0, 1, 2 */
+    size_t size = (size_t)data_pages * NDFS_PAGE_SIZE;
+    uint8_t *data = (uint8_t *)calloc(size, 1);
+    uint8_t *image = NULL, *read_data = NULL;
+    size_t image_size = 0, read_size = 0, count = 0;
+    uint32_t *blocks = NULL;
+    ndfs_object_entry_t entry;
+    char uname[NDFS_NAME_MAX + 1];
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_NOT_NULL(data);
+    fill_nonzero_pattern(data + (size_t)3 * NDFS_PAGE_SIZE, NDFS_PAGE_SIZE, 8);
+    fill_nonzero_pattern(data + (size_t)1030 * NDFS_PAGE_SIZE, NDFS_PAGE_SIZE, 9);
+    {
+        uint32_t *hole_pages = (uint32_t *)malloc(sizeof(uint32_t) * data_pages);
+        ndfs_hole_list_t holes;
+        uint32_t p, n = 0;
+        TEST_ASSERT_NOT_NULL(hole_pages);
+        for (p = 0; p < data_pages; p++) {
+            if (p != 3 && p != 1030) hole_pages[n++] = p;
+        }
+        holes.pages = hole_pages;
+        holes.count = n;
+        TEST_ASSERT_OK(ndfs_write_file_holes(fs, "SYSTEM/GAP:DATA", data, size,
+                                             NDFS_PARITY_NONE, &holes));
+        free(hole_pages);
+    }
+    strcpy(uname, "SYSTEM");
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "GAP:DATA", uname, &entry));
+    TEST_ASSERT_EQUAL(NDFS_PTR_SUBINDEXED, entry.file_pointer.type);
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &image, &image_size));
+    ndfs_close(fs);
+
+    /* clear sub-index entry 1 (bytes 4..7 of the sub-index block) */
+    memset(image + (size_t)entry.file_pointer.block_id * NDFS_PAGE_SIZE + 4, 0, 4);
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(image, image_size, true, &fs2));
+    free(image);
+
+    TEST_ASSERT_OK(ndfs_read_file(fs2, "SYSTEM/GAP:DATA", &read_data, &read_size));
+    TEST_ASSERT_EQUAL(size, read_size);
+    TEST_ASSERT(memcmp(read_data, data, size) == 0);
+
+    TEST_ASSERT_OK(ndfs_get_file_blocks(fs2, "SYSTEM/GAP:DATA", &blocks, &count));
+    TEST_ASSERT_EQUAL((size_t)data_pages, count);
+    TEST_ASSERT(blocks[3] != 0);
+    TEST_ASSERT_EQUAL(0u, blocks[600]);
+    TEST_ASSERT(blocks[1030] != 0);
+
+    free(blocks);
+    ndfs_free_data(read_data);
+    free(data);
+    ndfs_close(fs2);
+    return 0;
+}
+
 /* Deleting a SubIndexed file must free every block it owns: data blocks,
  * every group's own index block, AND the top-level sub-index block. */
 static int test_subindexed_delete_frees_all_blocks(void)
@@ -1744,6 +1810,7 @@ void run_write_comprehensive_tests(void)
     RUN_TEST(test_subindexed_just_over_boundary);
     RUN_TEST(test_subindexed_multi_group_roundtrip);
     RUN_TEST(test_subindexed_sparse_holes);
+    RUN_TEST(test_subindexed_empty_group_entry);
     RUN_TEST(test_subindexed_delete_frees_all_blocks);
     RUN_TEST(test_subindexed_overwrite_no_leak);
     RUN_TEST(test_object_dir_converts_past_64_users);

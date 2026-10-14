@@ -623,6 +623,9 @@ static ndfs_error_t load_structures(struct ndfs_filesystem *fs)
                 ndfs_block_pointer_t idx_ptr = ndfs_bp_from_bytes(sub_idx_page, i * 4);
                 const uint8_t *idx_page;
                 size_t k;
+                /* Entry i covers object-file pages i * 512 on, set or not: an empty entry
+                 * or a lost index page must not move the entries behind it down. */
+                global_idx = (uint32_t)(i * NDFS_MAX_OBJECT_FILE_PTRS * NDFS_ENTRIES_PER_PAGE);
                 if (!ndfs_bp_is_valid(&idx_ptr)) continue;
 
                 idx_page = read_page(fs, idx_ptr.block_id);
@@ -785,6 +788,14 @@ static ndfs_error_t read_subindexed_data(const struct ndfs_filesystem *fs,
     for (si = 0; si < NDFS_MAX_OBJECT_FILE_PTRS && bytes_read < bytes_in_file; si++) {
         ndfs_block_pointer_t idx_ptr = ndfs_bp_from_bytes(sub_page, si * 4);
         const uint8_t *idx_page;
+        /* Entry si of the sub-index block covers file bytes from si * 512 pages on, whether
+         * it is set or not. An empty entry is a hole of 512 pages (1 MB): the position must
+         * still move past it, or every page behind it lands 1 MB too early. Measured
+         * 2026-10-14 on a domain the ND Linker B01 wrote under SINTRAN III: entries 0, 2, 4
+         * and 6 set, 1, 3 and 5 empty; the segments the domain header puts at 0x202000,
+         * 0x402000 and 0x602000 came out at 0x102000, 0x202000 and 0x302000. */
+        bytes_read = si * (size_t)NDFS_MAX_OBJECT_FILE_PTRS * NDFS_PAGE_SIZE;
+        if (bytes_read >= bytes_in_file) break;
         if (!ndfs_bp_is_valid(&idx_ptr)) continue;
 
         idx_page = read_page(fs, idx_ptr.block_id);
@@ -3102,7 +3113,16 @@ ndfs_error_t ndfs_get_file_blocks(const ndfs_filesystem_t *fs, const char *path,
             ndfs_block_pointer_t ip = ndfs_bp_from_bytes(sib, si * 4);
             const uint8_t *ib;
             uint32_t j;
-            if (ip.block_id == 0) break;
+            if (ip.block_id == 0) {
+                /* An empty entry is a hole of 512 pages, not the end of the file: SINTRAN
+                 * III leaves the entries of groups with no page in them empty (a domain of
+                 * the ND Linker B01, 2026-10-14: entries 0, 2, 4, 6 set). */
+                for (j = 0; j < 512 && remaining > 0; j++) {
+                    blocks[n++] = 0;
+                    remaining--;
+                }
+                continue;
+            }
             ib = read_page(fs, ip.block_id);
             if (!ib) { cache_unpin(fs, obj->file_pointer.block_id); free(blocks); return NDFS_ERR_CORRUPT; }
             for (j = 0; j < 512 && remaining > 0; j++) {
