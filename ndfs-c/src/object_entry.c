@@ -110,9 +110,10 @@ ndfs_error_t ndfs_oe_from_bytes(const uint8_t *data, size_t data_len,
     /* Pages in file (bytes 52-55, big-endian) */
     out->pages_in_file = ndfs_read_u32be(data, offset + 52);
 
-    /* Bytes in file (bytes 56-59, big-endian) + 1 */
+    /* Bytes in file (bytes 56-59, big-endian) + 1. 32-bit wrap is intended: stored
+       0xFFFFFFFF (empty file) gives 0. The cast makes that explicit. */
     bytes_minus_one = ndfs_read_u32be(data, offset + 56);
-    out->bytes_in_file = bytes_minus_one + 1;
+    out->bytes_in_file = (uint32_t)(bytes_minus_one + 1u);
 
     /* File pointer (bytes 60-63) */
     out->file_pointer = ndfs_bp_from_bytes(data, offset + 60);

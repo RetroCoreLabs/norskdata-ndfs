@@ -178,8 +178,9 @@ export class ObjectEntry {
     // Pages in file (bytes 52-55, big-endian)
     entry.pagesInFile = readUint32BE(data, offset + 52);
 
-    // Bytes in file (bytes 56-59, big-endian) + 1
-    entry.bytesInFile = readUint32BE(data, offset + 56) + 1;
+    // Bytes in file (bytes 56-59, big-endian) + 1. The field is 32 bits wide, so a stored
+    // 0xFFFFFFFF (empty file) wraps to 0; plain JS addition would give 4294967296.
+    entry.bytesInFile = (readUint32BE(data, offset + 56) + 1) >>> 0;
 
     // File pointer (bytes 60-63)
     entry.filePointer = BlockPointer.fromBytes(data, offset + 60);
