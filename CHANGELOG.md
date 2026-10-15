@@ -10,6 +10,14 @@ All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndto
   counts as 512 sparse pages, so the pages after it are read at their own
   place instead of being shifted down.
 
+### Fixed - bytes-in-file, image creator, access bits
+
+* All three ports - Bytes-in-file is stored as size-1 and is now wrapped to
+  32 bits, so a stored 0xFFFFFFFF reads as 0 bytes, not 4294967296.
+* `ndfs-ts` - the image creator wrote defaultFileAccess to the wrong offset.
+* `ndfs-c` / `ndfs-py` / `ndfs-ts` - an access_bits override for writes to
+  distribution media.
+
 ### Changed
 
 * All three ports, `LICENSE` and the source headers: HackerCorp Labs renamed
