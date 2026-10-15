@@ -83,7 +83,7 @@ encoding, and a "set on create to" value.
 
 ## Phase 1 — Golden corpus & fixtures
 
-1. **Real images**: curate a representative set from `D:\ND\HDD` (floppy, SMD,
+1. **Real images**: curate a representative set from the local collection of ND disk images, kept outside this repository (floppy, SMD,
    Winchester; populated SYSTEM + multi-user; files with versions; sparse
    files). Record provenance.
 2. **Synthetic golden images**: drive **RC** to generate images for each

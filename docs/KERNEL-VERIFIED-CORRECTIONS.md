@@ -1,6 +1,6 @@
 # NDFS — kernel-verified corrections
 
-**Full path:** `E:\Dev\Ronny\norskdata-ndfs\docs\KERNEL-VERIFIED-CORRECTIONS.md`
+**Path:** `docs/KERNEL-VERIFIED-CORRECTIONS.md`
 
 This library was originally reverse-engineered from disk images **without** the producing
 code. It has now been corrected against the **real SINTRAN III kernel** — the carved

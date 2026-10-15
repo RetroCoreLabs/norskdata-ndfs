@@ -248,11 +248,12 @@ def test_pages_do_not_alias():
 # These are the strongest tests available, because the ground truth was produced by
 # SINTRAN itself. They are skipped when the media are not present rather than failing,
 # since the images live outside this repository.
-REAL_IMAGES = [
-    r"E:\Dev\Ronny\RetroFS\demo\test-images\ndfs\BIGDISK0-L.IMG",
-    r"C:\Users\ronny\Downloads\210319H02-XX-01D.img",
-    r"E:\Dev\Repos\Ronny\RetroCore\Emulated.Tests\ND100\TestData\Nd-210523I01-XX-01D.img",
-]
+#
+# Set NDFS_REAL_IMAGES to the image paths, separated by os.pathsep (";" on Windows,
+# ":" elsewhere). The three packs used when this test was written were
+# BIGDISK0-L.IMG, 210319H02-XX-01D.img and Nd-210523I01-XX-01D.img. When the variable
+# is unset the list holds one empty entry, so the tests report SKIPPED, not "no tests".
+REAL_IMAGES = [p for p in os.environ.get("NDFS_REAL_IMAGES", "").split(os.pathsep) if p] or [""]
 
 
 @pytest.mark.parametrize("image_path", REAL_IMAGES)
@@ -268,7 +269,7 @@ def test_no_page_holding_file_data_is_marked_free(image_path):
     Tolerance is zero, deliberately.
     """
     if not os.path.exists(image_path):
-        pytest.skip(f"real SINTRAN media not present: {image_path}")
+        pytest.skip(f"real SINTRAN media not present (set NDFS_REAL_IMAGES): {image_path!r}")
 
     from ndfs.filesystem import NdfsFileSystem
 
@@ -303,7 +304,7 @@ def test_no_page_holding_file_data_is_marked_free(image_path):
 def test_structural_pages_are_marked_used(image_path):
     """The pack's own metadata pages must be marked used on a real pack."""
     if not os.path.exists(image_path):
-        pytest.skip(f"real SINTRAN media not present: {image_path}")
+        pytest.skip(f"real SINTRAN media not present (set NDFS_REAL_IMAGES): {image_path!r}")
 
     from ndfs.filesystem import NdfsFileSystem
 

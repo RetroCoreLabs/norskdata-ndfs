@@ -7,7 +7,7 @@ Built on [libndfs](../../README.md), the C99 NDFS library.
 ## Build
 
 ```bash
-cd /mnt/e/Dev/Ronny/RetroFS/libs/ndfs-c
+cd ndfs-c   # from the repository root
 mkdir -p build && cd build
 cmake ..
 make ndtool
