@@ -3,7 +3,7 @@ Tests for write operations -- small, 1-page, multi-page, overwrite, auto quota, 
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 import pytest
 

@@ -7,7 +7,7 @@ sparse files, user management, and quota tracking.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 from __future__ import annotations
 
@@ -810,7 +810,11 @@ class NdfsFileSystem:
                     break
                 ip = BlockPointer.from_bytes(sib, si * 4)
                 if ip.block_id == 0:
-                    break
+                    # an empty entry is 512 holes, not the end of the file
+                    n = min(remaining, MAX_OBJECT_FILE_POINTERS)
+                    blocks.extend([0] * n)
+                    remaining -= n
+                    continue
                 ib = self._read_page(ip.block_id)
                 for j in range(MAX_OBJECT_FILE_POINTERS):
                     if remaining <= 0:
@@ -1300,6 +1304,11 @@ class NdfsFileSystem:
         bytes_read = 0
 
         for si in range(MAX_OBJECT_FILE_POINTERS):
+            # Entry si covers file bytes from si * 512 pages on, set or not: an empty
+            # entry is a hole of 512 pages (SINTRAN III leaves the entry of a group with
+            # no page in it empty - a domain of the ND Linker B01, 2026-10-14: entries
+            # 0, 2, 4, 6 set). The position must move past it.
+            bytes_read = si * MAX_OBJECT_FILE_POINTERS * NDFS_PAGE_SIZE
             if bytes_read >= obj.bytes_in_file:
                 break
             index_ptr = BlockPointer.from_bytes(sub_index_page, si * 4)

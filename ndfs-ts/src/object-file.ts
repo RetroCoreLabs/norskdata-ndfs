@@ -6,7 +6,7 @@
  *
  * SPDX-License-Identifier: MIT
  * Copyright (c) 1985-2026 Ronny Hansen
- * HackerCorp Labs - https://github.com/HackerCorpLabs
+ * RetroCore Labs - https://github.com/RetroCoreLabs
  */
 
 import {
@@ -352,6 +352,9 @@ export class ObjectFile {
       const subIndexPage = readPage(pointer.blockId);
       for (let i = 0; i < MAX_OBJECT_FILE_POINTERS; i++) {
         const indexPtr = BlockPointer.fromBytes(subIndexPage, i * 4);
+        // Entry i covers object-file pages i * 512 on, set or not: an empty entry or a lost
+        // index page must not move the entries behind it down.
+        globalObjectIndex = i * MAX_OBJECT_FILE_POINTERS * ENTRIES_PER_PAGE;
         if (!indexPtr.isValid()) continue;
 
         // A page of a damaged floppy cannot be read at all, and one lost

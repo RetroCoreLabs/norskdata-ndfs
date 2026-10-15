@@ -15,7 +15,7 @@ change and are exercised incidentally by every round-trip/delete test here.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 import pytest
 
@@ -259,3 +259,34 @@ class TestExactBoundaryStillIndexed:
 
         content = ndfs.read_file("SYSTEM/EXACT512:DATA")
         assert content == bytes(data)
+
+
+class TestEmptySubIndexEntry:
+    def test_pages_behind_an_empty_entry_stay_in_place(self):
+        # SINTRAN III leaves the sub-index entry of a group with no page in it
+        # EMPTY (a domain of the ND Linker B01, 2026-10-14: entries 0, 2, 4, 6
+        # set). Our writer always makes every group's index block, so the file
+        # is written and entry 1 is then cleared, as SINTRAN would have it.
+        ndfs = _make_fs(pages=2000)
+        num_pages = 1500
+        data = bytearray(NDFS_PAGE_SIZE * num_pages)
+        for pg in (3, 1030):
+            start = pg * NDFS_PAGE_SIZE
+            for i in range(start, start + NDFS_PAGE_SIZE):
+                data[i] = 0xA5
+        holes = [p for p in range(num_pages) if p not in (3, 1030)]
+        ndfs.write_file("SYSTEM/GAP:DATA", data, holes=holes)
+        entry = _find_entry(ndfs, "GAP")
+        assert entry.file_pointer.type == PointerType.SubIndexed
+
+        image = ndfs.to_buffer()
+        at = entry.file_pointer.block_id * NDFS_PAGE_SIZE + 4
+        image[at:at + 4] = b"\0\0\0\0"
+        again = NdfsFileSystem(image, read_only=True)
+
+        assert again.read_file("SYSTEM/GAP:DATA") == bytes(data)
+        blocks = again.get_file_blocks("SYSTEM/GAP:DATA")
+        assert len(blocks) == num_pages
+        assert blocks[3] != 0
+        assert blocks[600] == 0
+        assert blocks[1030] != 0

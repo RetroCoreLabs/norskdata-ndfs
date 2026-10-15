@@ -7,7 +7,7 @@
  *
  * SPDX-License-Identifier: MIT
  * Copyright (c) 1985-2026 Ronny Hansen
- * HackerCorp Labs - https://github.com/HackerCorpLabs
+ * RetroCore Labs - https://github.com/RetroCoreLabs
  */
 
 import {
@@ -994,7 +994,14 @@ export class NdfsFileSystem {
       let remaining = logicalPages;
       for (let si = 0; si < MAX_OBJECT_FILE_POINTERS && remaining > 0; si++) {
         const ip = BlockPointer.fromBytes(sib, si * 4);
-        if (ip.blockId === 0) break;
+        if (ip.blockId === 0) {
+          // an empty entry is 512 holes, not the end of the file
+          for (let j = 0; j < MAX_OBJECT_FILE_POINTERS && remaining > 0; j++) {
+            blocks.push(0);
+            remaining--;
+          }
+          continue;
+        }
         const ib = this.readPage(ip.blockId);
         for (let j = 0; j < MAX_OBJECT_FILE_POINTERS && remaining > 0; j++) {
           blocks.push(BlockPointer.fromBytes(ib, j * 4).blockId);
@@ -1246,6 +1253,12 @@ export class NdfsFileSystem {
 
     for (let si = 0; si < MAX_OBJECT_FILE_POINTERS && bytesRead < obj.bytesInFile; si++) {
       const indexPtr = BlockPointer.fromBytes(subIndexPage, si * 4);
+      // Entry si covers file bytes from si * 512 pages on, set or not: an empty entry is a
+      // hole of 512 pages (SINTRAN III leaves the entry of a group with no page in it empty -
+      // a domain of the ND Linker B01, 2026-10-14: entries 0, 2, 4, 6 set). The position
+      // must move past it.
+      bytesRead = si * MAX_OBJECT_FILE_POINTERS * NDFS_PAGE_SIZE;
+      if (bytesRead >= obj.bytesInFile) break;
       if (!indexPtr.isValid()) continue;
 
       const indexPage = this.readPage(indexPtr.blockId);

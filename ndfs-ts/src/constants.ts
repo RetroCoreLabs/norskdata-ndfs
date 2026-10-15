@@ -3,7 +3,7 @@
  *
  * SPDX-License-Identifier: MIT
  * Copyright (c) 1985-2026 Ronny Hansen
- * HackerCorp Labs - https://github.com/HackerCorpLabs
+ * RetroCore Labs - https://github.com/RetroCoreLabs
  */
 
 /** Page size in bytes (1024 x 16-bit words). */

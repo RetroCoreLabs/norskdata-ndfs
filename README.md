@@ -247,4 +247,4 @@ dependencies. Releases are built automatically by the
 
 ## License
 
-MIT - Copyright (c) 1985-2026 Ronny Hansen, [HackerCorp Labs](https://github.com/HackerCorpLabs)
+MIT - Copyright (c) 1985-2026 Ronny Hansen, [RetroCore Labs](https://github.com/RetroCoreLabs)

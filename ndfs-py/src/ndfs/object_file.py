@@ -6,7 +6,7 @@ or sub-indexed (sub-index block with 512 pointers to index blocks).
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 from __future__ import annotations
 
@@ -273,6 +273,9 @@ class ObjectFile:
             sub_index_page = read_page(pointer.block_id)
             for i in range(MAX_OBJECT_FILE_POINTERS):
                 index_ptr = BlockPointer.from_bytes(sub_index_page, i * 4)
+                # Entry i covers object-file pages i * 512 on, set or not: an empty entry
+                # or a lost index page must not move the entries behind it down.
+                global_object_index = i * MAX_OBJECT_FILE_POINTERS * ENTRIES_PER_PAGE
                 if not index_ptr.is_valid():
                     continue
                 # A page of a damaged floppy cannot be read at all, and one

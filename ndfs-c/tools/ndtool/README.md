@@ -757,4 +757,4 @@ ndtool is inspired by [Tor Arntsen's ndfs tool](https://www.ndwiki.org/wiki/User
 
 ## License
 
-MIT - Copyright (c) 1985-2026 Ronny Hansen, HackerCorp Labs
+MIT - Copyright (c) 1985-2026 Ronny Hansen, RetroCore Labs
