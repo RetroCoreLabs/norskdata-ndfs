@@ -24,7 +24,7 @@ Byte offsets:
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 from __future__ import annotations
 
@@ -267,8 +267,9 @@ class ObjectEntry:
         # Pages in file (bytes 52-55, big-endian)
         entry.pages_in_file = read_uint32_be(data, offset + 52)
 
-        # Bytes in file (bytes 56-59, big-endian) + 1
-        entry.bytes_in_file = read_uint32_be(data, offset + 56) + 1
+        # Bytes in file (bytes 56-59, big-endian) + 1. The field is 32 bits wide, so a stored
+        # 0xFFFFFFFF (empty file) wraps to 0; Python ints do not wrap by themselves.
+        entry.bytes_in_file = (read_uint32_be(data, offset + 56) + 1) & 0xFFFFFFFF
 
         # File pointer (bytes 60-63)
         entry.file_pointer = BlockPointer.from_bytes(data, offset + 60)
