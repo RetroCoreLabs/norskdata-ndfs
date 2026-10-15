@@ -3,7 +3,7 @@ Tests for ndfs.endian -- big-endian read/write helpers.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 import pytest
 from ndfs.endian import read_uint16_be, read_uint32_be, write_uint16_be, write_uint32_be

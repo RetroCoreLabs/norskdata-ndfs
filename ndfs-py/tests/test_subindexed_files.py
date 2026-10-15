@@ -15,7 +15,7 @@ change and are exercised incidentally by every round-trip/delete test here.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 import pytest
 

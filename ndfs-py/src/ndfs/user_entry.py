@@ -33,7 +33,7 @@ Byte offsets:
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 from __future__ import annotations
 

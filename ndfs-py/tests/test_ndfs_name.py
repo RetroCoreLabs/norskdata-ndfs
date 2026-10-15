@@ -3,7 +3,7 @@ Tests for ndfs.ndfs_name -- NDFS name encoding/decoding.
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 import pytest
 from ndfs.ndfs_name import read_ndfs_name, write_ndfs_name

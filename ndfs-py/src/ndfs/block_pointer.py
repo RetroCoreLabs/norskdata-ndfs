@@ -3,7 +3,7 @@ NDFS block pointer: 32-bit value with type in top 2 bits, block ID in bottom 30 
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 from __future__ import annotations
 

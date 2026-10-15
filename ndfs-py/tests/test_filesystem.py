@@ -5,7 +5,7 @@ Comprehensive read/write/user/persistence tests mirroring ndfs-filesystem.test.t
 
 SPDX-License-Identifier: MIT
 Copyright (c) 1985-2026 Ronny Hansen
-HackerCorp Labs - https://github.com/HackerCorpLabs
+RetroCore Labs - https://github.com/RetroCoreLabs
 """
 import os
 import pytest
