@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(ndfs VERSION 0.0.7 LANGUAGES C)
+project(ndfs VERSION 0.0.8 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)

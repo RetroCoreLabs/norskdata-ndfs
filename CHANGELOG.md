@@ -2,6 +2,19 @@
 
 All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndtool`).
 
+## 0.0.8 - 2026-10-15
+
+### Fixed - an empty sub-index entry is 512 holes, not a skip
+
+* `ndfs-c` / `ndfs-py` / `ndfs-ts` - an empty entry in a sub-index block now
+  counts as 512 sparse pages, so the pages after it are read at their own
+  place instead of being shifted down.
+
+### Changed
+
+* All three ports, `LICENSE` and the source headers: HackerCorp Labs renamed
+  to RetroCore Labs.
+
 ## 0.0.7 - 2026-08-23
 
 ### Fixed - one unreadable page hid every file on the floppy
