@@ -207,7 +207,8 @@ Before this change `ndfs_bf_find_free` took the highest free page for every allo
 matches SINTRAN only for contiguous files. It did not match for index blocks (hint rule), data pages and 1 page files
 (block rule). The quota did not charge index blocks and object pages, and the bit file size was taken from the length of
 the device. The C, Python and TypeScript libraries now follow sections 2 to 4 and 7 (tests `test_alloc_rules.c`,
-`test_alloc_rules.py`, `alloc-rules.test.ts`, 14 + 41 + 42 tests). Images made by the three libraries with the same options
+`test_alloc_rules.py`, `alloc-rules.test.ts`, 14 + 41 + 42 tests). The C# libraries RetroFS.NDFS and RetroIO.Storage.Ndfs follow the
+same rules (class `NdfsAllocationRulesTests`, 35 tests in each). Images made by the five libraries with the same options
 are byte-identical (eight cases compared).
 
 Notes:

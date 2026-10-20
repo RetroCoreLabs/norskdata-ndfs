@@ -6,7 +6,8 @@ All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndto
 
 Everything here was measured with real SINTRAN M in the nd100x emulator and is written up in
 `docs/CREATE-DIRECTORY-ORACLE.md`, `docs/CREATE-DIRECTORY-PLACEMENT.md` and `docs/NDFS-ALLOCATION-RULES.md`.
-`ndfs-c`, `ndfs-py` and `ndfs-ts` give byte-identical images for the same options (checked with eight cases).
+`ndfs-c`, `ndfs-py`, `ndfs-ts` and the C# libraries RetroFS.NDFS and RetroIO.Storage.Ndfs give byte-identical images for the
+same options (checked with eight cases). The C# libraries follow the same rules; they are in their own repositories.
 
 ### Changed - images are made the way SINTRAN `@CREATE-DIRECTORY` makes them
 
