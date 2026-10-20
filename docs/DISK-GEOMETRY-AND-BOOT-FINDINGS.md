@@ -318,3 +318,25 @@ Not done:
 - After the first file the library rewrites the master block's Unreserved Pages with its own free page count, not SINTRAN's formula.
 - Booting a created image in the emulator; the boot areas are from different SINTRAN generations (K, L, K).
 - The C# libraries (RetroFS and RetroIO) have not been changed.
+
+## 9. Boot test of the embedded boot areas (2026-10-20)
+
+MEASURED in the nd100x emulator, booting from a Winchester controller (`boot device = wd.0.0`) a copy of a real SINTRAN M
+system disk (38400 pages) with bytes 0 to 1999 of page 0 replaced:
+
+| Boot area in page 0 | Result after 90 seconds |
+|---|---|
+| the disk's own (hash e2da6491) | SINTRAN III RUNNING |
+| the embedded Winchester area (donor 1325.img, hash 0ab983b4) | no console output at all |
+| the embedded SMD area (hash 296ed770) | no console output at all |
+| the embedded SCSI area (hash d90b55c5) | no console output at all |
+
+Why (CHECKED by comparing the words): the boot area of this M system differs from all three embedded areas in 839 to 906 of
+1000 words. The embedded areas are from older SINTRAN generations (K, L, K); the code is laid out one word apart from the
+M layout, so the words that carry the disk-specific data (where the system is, the geometry block) are not at the same
+place. An embedded boot area is therefore only usable on a disk whose system is of the same generation, and not on a
+system copied from an M disk. What is NOT known: whether an image made by `ndtool` with a K or L system copied onto it
+boots; nobody has put a system on a created image. The boot areas stay "not verified".
+
+To make a bootable created image the boot area has to come from a disk of the same SINTRAN generation as the system that
+is copied onto it. `ndtool --create --boot-from IMAGE` does that (it copies bytes 0 to 1999 of page 0 of IMAGE).
