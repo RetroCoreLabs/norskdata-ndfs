@@ -338,5 +338,9 @@ place. An embedded boot area is therefore only usable on a disk whose system is 
 system copied from an M disk. What is NOT known: whether an image made by `ndtool` with a K or L system copied onto it
 boots; nobody has put a system on a created image. The boot areas stay "not verified".
 
+A created image cannot be booted at all as it is: it holds a boot area and an empty directory, but no SINTRAN. A real test of a
+created disk means installing SINTRAN onto it from the installation floppies (the sections about floppies above) and then booting it.
+The test in this section only shows that a boot area of one generation does not start a system of another generation.
+
 To make a bootable created image the boot area has to come from a disk of the same SINTRAN generation as the system that
 is copied onto it. `ndtool --create --boot-from IMAGE` does that (it copies bytes 0 to 1999 of page 0 of IMAGE).
