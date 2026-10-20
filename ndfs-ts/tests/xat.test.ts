@@ -56,8 +56,9 @@ function createTestImage(totalPages: number = 50, dirName: string = 'TESTDISK'):
   image[usrDataOff + 37] = 0;
 
   const bitmapOff = 11 * NDFS_PAGE_SIZE;
-  image[bitmapOff] = 0xff;
-  image[bitmapOff + 1] = 0x0f;
+  // Word addressed: pages 0-7 are in the second byte of the pair, pages 8-15 in the first.
+  image[bitmapOff + 1] = 0xff;
+  image[bitmapOff] = 0x0f;
 
   return image;
 }

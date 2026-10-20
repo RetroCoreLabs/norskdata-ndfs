@@ -139,7 +139,8 @@ describe('SparseFileQuotaAccounting', () => {
     fs.writeFile('SYSTEM/ALLZERO:DAT', data, 'none', Array.from({ length: 5 }, (_, i) => i));
 
     const after = pagesUsedFor(fs, 'SYSTEM');
-    expect(after).toBe(before);
+    // No data page is real; the file's index block is charged (SINTRAN charges index blocks).
+    expect(after - before).toBe(1);
   });
 
   it('mixed sparse/real file charges only the real pages', () => {
@@ -152,10 +153,10 @@ describe('SparseFileQuotaAccounting', () => {
     fs.writeFile('SYSTEM/MIXEDQUOTA:DAT', data, 'none', [3, 4, 5, 6, 7, 8, 9]);
 
     const after = pagesUsedFor(fs, 'SYSTEM');
-    expect(after - before).toBe(3);
+    expect(after - before).toBe(3 + 1); // + the index block
   });
 
-  it('fully-real file charges exactly its page count, no structural overhead', () => {
+  it('fully-real file charges its page count plus its index block', () => {
     const fs = createFS();
     const before = pagesUsedFor(fs, 'SYSTEM');
 
@@ -164,7 +165,7 @@ describe('SparseFileQuotaAccounting', () => {
     fs.writeFile('SYSTEM/FULLREAL:DAT', data);
 
     const after = pagesUsedFor(fs, 'SYSTEM');
-    expect(after - before).toBe(6);
+    expect(after - before).toBe(6 + 1);
   });
 
   it('deleting a file refunds exactly what creating it charged', () => {
@@ -191,22 +192,22 @@ describe('SparseFileQuotaAccounting', () => {
     };
 
     fs.writeFile('SYSTEM/GROW:DAT', grow(2));
-    expect(pagesUsedFor(fs, 'SYSTEM') - beforeFirstWrite).toBe(2);
+    expect(pagesUsedFor(fs, 'SYSTEM') - beforeFirstWrite).toBe(2 + 1);
 
     // Overwrite with a much larger real file: quota must track the NEW real
     // page count, replacing the old one (exercises the updateExistingFile fix).
     fs.writeFile('SYSTEM/GROW:DAT', grow(8));
-    expect(pagesUsedFor(fs, 'SYSTEM') - beforeFirstWrite).toBe(8);
+    expect(pagesUsedFor(fs, 'SYSTEM') - beforeFirstWrite).toBe(8 + 1);
 
     // Overwrite with a smaller real file: quota must shrink back down.
     fs.writeFile('SYSTEM/GROW:DAT', grow(1));
-    expect(pagesUsedFor(fs, 'SYSTEM') - beforeFirstWrite).toBe(1);
+    expect(pagesUsedFor(fs, 'SYSTEM') - beforeFirstWrite).toBe(1 + 1);
   });
 
-  it('a mostly-sparse SubIndexed file (>512 pages) charges only its real pages, not structural blocks', () => {
+  it('a mostly-sparse SubIndexed file (>512 pages) charges its real pages plus its structural blocks', () => {
     // >512 pages forces the SubIndexed layout (group-index blocks + a
-    // top-level sub-index block) — none of that structural overhead may be
-    // charged to the user's quota.
+    // top-level sub-index block). SINTRAN charges those blocks to the user
+    // like data pages; the sparse holes are free.
     const fs = createFS(2000);
     const before = pagesUsedFor(fs, 'SYSTEM');
 
@@ -217,6 +218,7 @@ describe('SparseFileQuotaAccounting', () => {
       Array.from({ length: 600 }, (_, i) => i).filter((p) => p !== 0 && p !== 2));
 
     const after = pagesUsedFor(fs, 'SYSTEM');
-    expect(after - before).toBe(2);
+    // 2 real pages + the top block + 2 group index blocks (600 pages = 2 groups of 512).
+    expect(after - before).toBe(2 + 3);
   });
 });

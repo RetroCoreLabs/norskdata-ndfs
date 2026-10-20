@@ -72,10 +72,10 @@ function createTestImage(totalPages: number = 50, dirName: string = 'TESTDISK'):
 
   // Page 11: Bit file (bitmap) - mark pages 0-11 as used
   const bitmapOff = 11 * NDFS_PAGE_SIZE;
-  // Pages 0-7: first byte = 0xFF (bits 0-7)
-  image[bitmapOff] = 0xff;
-  // Pages 8-11: second byte = bits 0-3
-  image[bitmapOff + 1] = 0x0f;
+  // The bit file is word addressed (page N is bit N%16 of the big-endian word N/16), so pages
+  // 0-7 are in the SECOND byte of the pair and pages 8-15 in the first.
+  image[bitmapOff + 1] = 0xff;
+  image[bitmapOff] = 0x0f;
 
   return image;
 }

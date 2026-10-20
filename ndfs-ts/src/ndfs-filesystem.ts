@@ -18,6 +18,7 @@ import {
   MAX_OBJECT_BLOCKS,
   MAX_OBJECT_FILE_POINTERS,
   PAGES_PER_INDEX_BLOCK,
+  PAGES_PER_OBJECT_BLOCK,
   USERS_PER_INDEX_BLOCK,
   MAX_USER_FILE_POINTERS,
   FIRST_ALLOCATABLE_BLOCK,
@@ -293,7 +294,14 @@ export class NdfsFileSystem {
     // sparse (all-zero) pages allocate no block (see writeDataPageToIndex's
     // zero-check, reused by countRealDataPages), and the index/sub-index
     // structural blocks are filesystem overhead, not user data.
-    const requiredRealPages = this.countRealDataPages(fileData, holes);
+    let requiredRealPages = this.countRealDataPages(fileData, holes);
+    // Index and sub-index blocks are charged like data pages (SINTRAN, measured), so the
+    // reservation must cover them too.
+    const dataPagesForQuota = Math.max(1, Math.ceil(fileData.length / NDFS_PAGE_SIZE));
+    requiredRealPages +=
+      dataPagesForQuota <= MAX_OBJECT_FILE_POINTERS
+        ? 1
+        : 1 + Math.ceil(dataPagesForQuota / MAX_OBJECT_FILE_POINTERS);
 
     // Check for existing file. The TYPE is part of a SINTRAN file's identity,
     // so it has to be passed: without it AAA:MODE and AAA:LIST resolve to the
@@ -311,9 +319,11 @@ export class NdfsFileSystem {
       // so before updateExistingContiguousFile rejects an oversized write.
       additionalNeeded = 0;
     } else if (existing) {
-      const existingRealPages = this.countRealDataPagesInList(this.resolveDataPointers(existing));
+      const existingRealPages = this.countChargedPagesForObject(existing);
       additionalNeeded = requiredRealPages > existingRealPages ? requiredRealPages - existingRealPages : 0;
     }
+    // The first file of a user also needs the user's first object data page.
+    if (!existing && this.countUserObjectPages(user.userIndex) === 0) additionalNeeded++;
 
     // Check and expand quota if needed
     if (additionalNeeded > 0) {
@@ -346,7 +356,7 @@ export class NdfsFileSystem {
 
     // Resolve the file's real data-block pointers BEFORE freeing them, so the
     // quota refund below can count exactly which pages were real vs. sparse.
-    const dataPointers = this.resolveDataPointers(obj);
+    const chargedPages = this.countChargedPagesForObject(obj);
 
     // Free blocks
     if (obj.filePointer && obj.filePointer.blockId > 0) {
@@ -358,8 +368,7 @@ export class NdfsFileSystem {
     // dataPointers), never the index/sub-index structural block itself.
     const user = this.userFile.getUser(obj.userIndex);
     if (user) {
-      const realPages = this.countRealDataPagesInList(dataPointers);
-      user.pagesUsed = user.pagesUsed >= realPages ? user.pagesUsed - realPages : 0;
+      user.pagesUsed = user.pagesUsed >= chargedPages ? user.pagesUsed - chargedPages : 0;
     }
 
     // Surgical writes: capture index/owner before removal, then rewrite the
@@ -1167,19 +1176,32 @@ export class NdfsFileSystem {
     if (mb.bitFilePointer && mb.bitFilePointer.isValid()) {
       const totalPages = this.data.length / NDFS_PAGE_SIZE;
       this.bitFile.initialize(totalPages);
+      this.bitFile.bitAddress = mb.bitFilePointer.blockId;
+
+      // Bound the ALLOCATION window by the directory's declared capacity (extPagesAvailable,
+      // words 1756B-1757B) when the extended-info block is valid. SINTRAN never hands out a page
+      // at or above the capacity; the gap to the physical device is the drive's spare region.
+      // The `<= totalPages` clamp matters: a real Winchester image declares a capacity larger
+      // than the file. Falls back to the whole device when there is no valid extended info.
+      if (mb.extValid && mb.extPagesAvailable > 0 && mb.extPagesAvailable <= totalPages) {
+        this.bitFile.allocCeiling = mb.extPagesAvailable;
+      }
 
       // Determine bitmap size in pages
       // Whole 16-bit words - the bit file is word addressed, so ceil(pages/8) cuts the
       // last word in half on any device whose page count is not a multiple of 16 and
       // loses the pages living in its high byte. A 616-page ND floppy loses 608..615.
       const bitmapBytes = (Math.ceil(totalPages / 8) + 1) & ~1;
-      const bitmapPages = Math.ceil(bitmapBytes / NDFS_PAGE_SIZE);
+      // SINTRAN sizes the bit file from the declared capacity, not from the device length
+      // (docs/NDFS-ALLOCATION-RULES.md); the bitmap in memory still covers the whole device,
+      // the pages past the on-disk bit file read as free.
+      const bitmapPages = NdfsFileSystem.bitFileDiskPages(mb, totalPages);
 
       // Read contiguous bitmap pages
       // A bitmap page that cannot be read leaves its own pages reading as
       // free; it must not cost the file listing, which is what the disk is
       // kept for. The pages that do read are loaded.
-      const bitmapData = new Uint8Array(bitmapPages * NDFS_PAGE_SIZE);
+      const bitmapData = new Uint8Array(Math.max(bitmapPages * NDFS_PAGE_SIZE, bitmapBytes));
       for (let i = 0; i < bitmapPages; i++) {
         try {
           const page = this.readPage(mb.bitFilePointer.blockId + i);
@@ -1190,6 +1212,71 @@ export class NdfsFileSystem {
       }
       this.bitFile.loadBitmap(bitmapData.subarray(0, bitmapBytes));
     }
+  }
+
+  /**
+   * Pages the bit file occupies on disk: ceil(capacity / 16384), the capacity being the declared
+   * directory size when a valid Extended Info Block gives it, else the device length.
+   */
+  private static bitFileDiskPages(mb: MasterBlock, totalPages: number): number {
+    let basis = totalPages;
+    if (mb.extValid && mb.extPagesAvailable > 0 && mb.extPagesAvailable <= totalPages) {
+      basis = mb.extPagesAvailable;
+    }
+    const bitmapBytes = (Math.ceil(basis / 8) + 1) & ~1;
+    return Math.ceil(bitmapBytes / NDFS_PAGE_SIZE);
+  }
+
+  /**
+   * Index and sub-index blocks that belong to `obj`: none for a contiguous file, one for an
+   * Indexed file, the top block plus one per valid slot for a SubIndexed file. SINTRAN charges
+   * them to the owner like data pages (docs/NDFS-ALLOCATION-RULES.md section 7).
+   */
+  private countIndexBlocksForObject(obj: ObjectEntry): number {
+    if (!obj.filePointer || obj.filePointer.blockId === 0) return 0;
+    if (obj.filePointer.type === PointerType.Indexed) return 1;
+    if (obj.filePointer.type === PointerType.SubIndexed) {
+      const subIndexPage = this.readPage(obj.filePointer.blockId);
+      let count = 1;
+      for (let si = 0; si < MAX_OBJECT_FILE_POINTERS; si++) {
+        if (BlockPointer.fromBytes(subIndexPage, si * 4).isValid()) count++;
+      }
+      return count;
+    }
+    return 0;
+  }
+
+  /** Pages SINTRAN charges to the owner for one file: real data pages + index blocks. */
+  private countChargedPagesForObject(obj: ObjectEntry): number {
+    return this.countRealDataPagesInList(this.resolveDataPointers(obj)) + this.countIndexBlocksForObject(obj);
+  }
+
+  /**
+   * Object data pages that belong to one user: the valid pointers in the user's 8 slots of the
+   * object index (slot = user*8 .. user*8+7, in the user's group of 64). Each is charged to the user.
+   */
+  private countUserObjectPages(userIndex: number): number {
+    const mb = this.masterBlock;
+    if (!mb.objectFilePointer || !mb.objectFilePointer.isValid()) return 0;
+    const group = Math.floor(userIndex / USERS_PER_INDEX_BLOCK);
+    const first = (userIndex % USERS_PER_INDEX_BLOCK) * PAGES_PER_OBJECT_BLOCK;
+    let indexPage: Uint8Array;
+    if (mb.objectFilePointer.type === PointerType.Indexed) {
+      if (group !== 0) return 0;
+      indexPage = this.readPage(mb.objectFilePointer.blockId);
+    } else if (mb.objectFilePointer.type === PointerType.SubIndexed) {
+      const subPage = this.readPage(mb.objectFilePointer.blockId);
+      const gp = BlockPointer.fromBytes(subPage, group * 4);
+      if (!gp.isValid()) return 0;
+      indexPage = this.readPage(gp.blockId);
+    } else {
+      return 0;
+    }
+    let count = 0;
+    for (let k = 0; k < PAGES_PER_OBJECT_BLOCK; k++) {
+      if (BlockPointer.fromBytes(indexPage, (first + k) * 4).isValid()) count++;
+    }
+    return count;
   }
 
   private readObjectData(obj: ObjectEntry): Uint8Array {
@@ -1292,7 +1379,7 @@ export class NdfsFileSystem {
 
     if (!useSubIndexed) {
       // Simple indexed allocation
-      const indexBlockId = this.bitFile.findFirstFreeBlock();
+      const indexBlockId = this.bitFile.findFreeHint();
       if (indexBlockId < 0) throw new Error('No free blocks for index block');
       this.bitFile.markBlockUsed(indexBlockId);
 
@@ -1307,7 +1394,7 @@ export class NdfsFileSystem {
     }
 
     // Sub-indexed allocation: sub-index block -> index blocks -> data blocks
-    const subIndexBlockId = this.bitFile.findFirstFreeBlock();
+    const subIndexBlockId = this.bitFile.findFreeHint();
     if (subIndexBlockId < 0) throw new Error('No free blocks for sub-index block');
     this.bitFile.markBlockUsed(subIndexBlockId);
 
@@ -1316,7 +1403,7 @@ export class NdfsFileSystem {
     let indexBlocksUsed = 1; // count the sub-index block
 
     for (let si = 0; si < numIndexBlocks; si++) {
-      const idxBlockId = this.bitFile.findFirstFreeBlock();
+      const idxBlockId = this.bitFile.findFreeHint();
       if (idxBlockId < 0) throw new Error('No free blocks for index block');
       this.bitFile.markBlockUsed(idxBlockId);
       indexBlocksUsed++;
@@ -1380,7 +1467,7 @@ export class NdfsFileSystem {
       // Sparse hole: BlockPointer 0, no disk block consumed.
       writeUint32BE(indexPage, slotInIndex * 4, 0);
     } else {
-      const dataBlockId = this.bitFile.findFirstFreeBlock();
+      const dataBlockId = this.bitFile.findFreeDataBlock();
       if (dataBlockId < 0) throw new Error('No free blocks for data');
       this.bitFile.markBlockUsed(dataBlockId);
 
@@ -1406,7 +1493,7 @@ export class NdfsFileSystem {
 
     if (mb.objectFilePointer.type === PointerType.Indexed && pageIdx < MAX_OBJECT_FILE_POINTERS) {
       // Fits in the existing single-level index -- original behavior, unchanged.
-      this.ensureObjectDirPageInGroup(mb.objectFilePointer.blockId, pageIdx);
+      this.ensureObjectDirPageInGroup(mb.objectFilePointer.blockId, pageIdx, pageIdx);
       return;
     }
 
@@ -1419,7 +1506,7 @@ export class NdfsFileSystem {
       // indirection above it (mirrors AllocateAndWriteData's own SubIndexed growth).
       const oldIndexBlockId = mb.objectFilePointer.blockId;
 
-      const subIndexBlock = this.bitFile.findFirstFreeBlock();
+      const subIndexBlock = this.bitFile.findFreeHint();
       if (subIndexBlock < 0) throw new Error('No free block for object-file sub-index conversion');
       this.bitFile.markBlockUsed(subIndexBlock);
 
@@ -1437,7 +1524,7 @@ export class NdfsFileSystem {
     const subPage = this.readPage(mb.objectFilePointer.blockId);
     let subPtr = BlockPointer.fromBytes(subPage, subIdx * 4);
     if (!subPtr.isValid()) {
-      const ib = this.bitFile.findFirstFreeBlock();
+      const ib = this.bitFile.findFreeHint();
       if (ib < 0) throw new Error('No free block for object-file group index page');
       this.bitFile.markBlockUsed(ib);
       this.writePage(ib, new Uint8Array(NDFS_PAGE_SIZE));
@@ -1445,7 +1532,7 @@ export class NdfsFileSystem {
       this.writePage(mb.objectFilePointer.blockId, subPage);
       subPtr = new BlockPointer(ib, PointerType.Contiguous);
     }
-    this.ensureObjectDirPageInGroup(subPtr.blockId, innerIdx);
+    this.ensureObjectDirPageInGroup(subPtr.blockId, innerIdx, pageIdx);
   }
 
   /**
@@ -1453,14 +1540,20 @@ export class NdfsFileSystem {
    * (either the object file's top-level block, or one SubIndexed group's own
    * index block) exists, allocating and linking it on demand.
    */
-  private ensureObjectDirPageInGroup(indexBlockId: number, pageIdx: number): void {
+  private ensureObjectDirPageInGroup(indexBlockId: number, pageIdx: number, globalPageIdx: number): void {
     const indexPage = this.readPage(indexBlockId);
     const ptr = BlockPointer.fromBytes(indexPage, pageIdx * 4);
     if (ptr.isValid()) return; // already allocated and linked
 
-    const blk = this.bitFile.findFirstFreeBlock();
+    const blk = this.bitFile.findFreeHint();
     if (blk < 0) throw new Error('No free blocks for object directory page');
     this.bitFile.markBlockUsed(blk);
+    // SINTRAN charges an object data page to its owner (8 pages per user, 64 users per index block).
+    const ownerUser =
+      Math.floor(globalPageIdx / PAGES_PER_INDEX_BLOCK) * USERS_PER_INDEX_BLOCK +
+      Math.floor((globalPageIdx % PAGES_PER_INDEX_BLOCK) / PAGES_PER_OBJECT_BLOCK);
+    const owner = this.userFile.getUser(ownerUser);
+    if (owner) owner.pagesUsed++;
     this.writePage(blk, new Uint8Array(NDFS_PAGE_SIZE));
     new BlockPointer(blk, PointerType.Contiguous).toBytes(indexPage, pageIdx * 4);
     this.writePage(indexBlockId, indexPage);
@@ -1484,7 +1577,7 @@ export class NdfsFileSystem {
     const ptr = BlockPointer.fromBytes(indexPage, pageIdx * 4);
     if (ptr.isValid()) return; // page already allocated on disk
 
-    const blk = this.bitFile.findFirstFreeBlock();
+    const blk = this.bitFile.findFreeHint();
     if (blk < 0) throw new Error('No free blocks for user directory page');
     this.bitFile.markBlockUsed(blk);
     this.writePage(blk, new Uint8Array(NDFS_PAGE_SIZE));
@@ -1508,7 +1601,7 @@ export class NdfsFileSystem {
     const slot = this.allocateUserObjectSlot(user);
     this.ensureObjectDirPage(slot);
 
-    const { topBlockId, pointerType } = this.allocateAndWriteData(fileData, dataPages, holes);
+    const { topBlockId, pointerType, indexBlocksUsed } = this.allocateAndWriteData(fileData, dataPages, holes);
 
     // Create object entry
     const entry = new ObjectEntry();
@@ -1572,7 +1665,7 @@ export class NdfsFileSystem {
     // holes allocate no block (see writeDataPageToIndex's zero-check, reused
     // by countRealDataPages) and the index/sub-index structural blocks are
     // filesystem overhead, not charged against the user.
-    user.pagesUsed += this.countRealDataPages(fileData, holes);
+    user.pagesUsed += this.countRealDataPages(fileData, holes) + indexBlocksUsed;
 
     // Surgical writes: new object's page, owner's user page, bitmap.
     this.writeObjectPage(entry.objectIndex);
@@ -1635,7 +1728,9 @@ export class NdfsFileSystem {
     // The defining property: one run, no index block. findFreeBlockRange is the only
     // allocator that can promise consecutive blocks -- the sparse allocator picks each
     // page independently and would scatter them.
-    const startBlock = this.bitFile.findFreeBlockRange(pages);
+    // A file of one page does not take the top-down run rule: SINTRAN gives it the page the data
+    // page allocator (RSPAG) would give (docs/NDFS-ALLOCATION-RULES.md section 3).
+    const startBlock = pages === 1 ? this.bitFile.findFreeDataBlock() : this.bitFile.findFreeBlockRange(pages);
     if (startBlock < 0) {
       throw new Error(`No contiguous run of ${pages} free pages is available on this pack`);
     }
@@ -1752,7 +1847,7 @@ export class NdfsFileSystem {
     // freeing them, so the refund below counts exactly which old pages were
     // real vs. sparse (never the index/sub-index structural blocks that
     // freeFileBlocks() also releases).
-    const oldRealPages = this.countRealDataPagesInList(this.resolveDataPointers(existing));
+    const oldRealPages = this.countChargedPagesForObject(existing);
 
     // Free old blocks
     this.freeFileBlocks(existing);
@@ -1764,7 +1859,7 @@ export class NdfsFileSystem {
     let dataPages = Math.ceil(fileData.length / NDFS_PAGE_SIZE);
     if (dataPages === 0) dataPages = 1;
 
-    const { topBlockId, pointerType } = this.allocateAndWriteData(fileData, dataPages, holes);
+    const { topBlockId, pointerType, indexBlocksUsed } = this.allocateAndWriteData(fileData, dataPages, holes);
 
     // Update existing entry
     // Allocated count, not the logical extent - see the note at the create site.
@@ -1775,7 +1870,7 @@ export class NdfsFileSystem {
     // Update user pages used. Quota tracks only REAL disk consumption: charge
     // only the new file's real (non-sparse) data pages, never the
     // index/sub-index structural block overhead.
-    user.pagesUsed += this.countRealDataPages(fileData, holes);
+    user.pagesUsed += this.countRealDataPages(fileData, holes) + indexBlocksUsed;
 
     // Surgical writes: the file's object page, owner's user page, bitmap.
     this.writeObjectPage(existing.objectIndex);
@@ -1904,7 +1999,9 @@ export class NdfsFileSystem {
   private writeBitFile(): void {
     const mb = this.masterBlock;
     if (!mb.bitFilePointer || !mb.bitFilePointer.isValid()) return;
-    const pages = this.bitFile.toPageBuffers();
+    const pages = this.bitFile.toPageBuffers(
+      NdfsFileSystem.bitFileDiskPages(mb, this.bitFile.totalPages),
+    );
     for (let i = 0; i < pages.length; i++) {
       this.writePage(mb.bitFilePointer.blockId + i, pages[i]);
     }

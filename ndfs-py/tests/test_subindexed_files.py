@@ -240,9 +240,9 @@ class TestSubIndexedSparseQuotaAccounting:
                         holes=[p for p in range(num_pages) if p not in (0, 2)])
         used_after = ndfs.get_user(0).pages_used
 
-        assert used_after - used_before == 2, (
-            "only the 2 real pages count -- none of the sub-index block or "
-            "group index blocks this file needed"
+        assert used_after - used_before == 2 + 3, (
+            "the 2 real pages count, plus the sub-index block and the two "
+            "group index blocks this file needed (SINTRAN charges them)"
         )
 
 

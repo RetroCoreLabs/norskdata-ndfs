@@ -20,7 +20,7 @@ class BitFile:
     """NDFS allocation bitmap manager."""
 
     __slots__ = ("index_pointer", "total_pages", "alloc_ceiling", "_bitmap",
-                 "_scan_cursor", "_used_count")
+                 "_scan_cursor", "_used_count", "bit_address", "_cursor_block")
 
     def __init__(self) -> None:
         self.index_pointer: Optional[BlockPointer] = None
@@ -46,6 +46,12 @@ class BitFile:
         #: WD0.img declares a capacity 36 pages LARGER than the file, and allocating there
         #: would run off the end.
         self.alloc_ceiling: int = 0
+        #: Page where the bit file itself starts (BA). 0 = not known; the SINTRAN placement
+        #: rules that start from BA then fall back to the top-down search.
+        self.bit_address: int = 0
+        #: The 256 page block of the last page given by find_free_data_block(), or None
+        #: for a fresh bit file (SINTRAN's "cold start").
+        self._cursor_block: Optional[int] = None
         self._bitmap: Optional[bytearray] = None
 
     def initialize(self, total_pages: int) -> None:
@@ -55,6 +61,7 @@ class BitFile:
         device (e.g. 38400 on a 75MB SMD pack), not to the declared capacity.
         """
         self.total_pages = total_pages
+        self._cursor_block = None
         self._scan_cursor = None  # new bitmap: any cached search position is stale
         self._used_count = None   # and the used-page total must be rebuilt
         # Until the caller supplies the declared capacity, the whole device is allocatable.
@@ -73,6 +80,7 @@ class BitFile:
         exist, even when the source slice stops on an odd boundary.
         """
         self._bitmap = bytearray(data)
+        self._cursor_block = None
         self._scan_cursor = None  # new bitmap: any cached search position is stale
         self._used_count = None   # and the used-page total must be rebuilt
         if len(self._bitmap) & 1:
@@ -232,6 +240,108 @@ class BitFile:
                     return i
         return -1
 
+    # ---- SINTRAN placement rules (RSBPG and RSPAG) ------------------------------------------
+    # See docs/NDFS-ALLOCATION-RULES.md and docs/CREATE-DIRECTORY-PLACEMENT.md.
+
+    def _ceiling(self) -> int:
+        ceiling = self.alloc_ceiling
+        if ceiling <= 0 or ceiling > self.total_pages:
+            ceiling = self.total_pages
+        return ceiling
+
+    def _page_ok(self, page: int, ceiling: int) -> bool:
+        return FIRST_ALLOCATABLE_BLOCK <= page < ceiling and not self.is_block_used(page)
+
+    def find_free_near(self, hint: int) -> int:
+        """SINTRAN's RSBPG rule: index blocks, user and object pages.
+
+        Start at page ``hint OR 15`` (the top bit of the bitmap word that holds the hint)
+        and take the first free page going down. If the word is full: word+1 (lowest bit
+        first), word-1 (highest bit first), word+2, word-2 and so on. Pages below the
+        first allocatable block and at or above the ceiling are never given. The page is
+        NOT marked used. Returns -1 when there is none.
+        """
+        ceiling = self._ceiling()
+        if ceiling <= FIRST_ALLOCATABLE_BLOCK:
+            return -1
+        nwords = (ceiling + 15) >> 4
+        word = hint >> 4
+        if word >= nwords:
+            word = nwords - 1
+        for bit in range(15, -1, -1):
+            p = (word << 4) + bit
+            if self._page_ok(p, ceiling):
+                return p
+        for step in range(1, nwords + 1):
+            w = word + step
+            if w < nwords:
+                for bit in range(16):
+                    p = (w << 4) + bit
+                    if self._page_ok(p, ceiling):
+                        return p
+            if word >= step:
+                w = word - step
+                for bit in range(15, -1, -1):
+                    p = (w << 4) + bit
+                    if self._page_ok(p, ceiling):
+                        return p
+        return -1
+
+    def find_free_hint(self) -> int:
+        """RSBPG rule with the hint taken from the bit file: ``bit_address - 1``.
+        Falls back to :meth:`find_first_free_block` when ``bit_address`` is 0."""
+        if self.bit_address == 0:
+            return self.find_first_free_block()
+        return self.find_free_near(self.bit_address - 1)
+
+    def cold_start_block(self) -> int:
+        """First 256 page block RSPAG looks in when nothing was allocated yet:
+        lastPage = (ceiling-1) div 16384, BP = (bit_address+1) div 16384; lastPage > BP:
+        block 0 of lastPage; lastPage = BP: the block of bit_address+1; lastPage < BP:
+        block 63 of lastPage. Returns page div 256."""
+        ceiling = self._ceiling()
+        last_page = (ceiling - 1 if ceiling > 0 else 0) >> 14
+        ba_page = (self.bit_address + 1) >> 14
+        if last_page > ba_page:
+            return last_page * 64
+        if last_page == ba_page:
+            return (self.bit_address + 1) >> 8
+        return last_page * 64 + 63
+
+    def find_free_data_block(self) -> int:
+        """SINTRAN's RSPAG rule: data pages of indexed files and files of one page.
+
+        Search 256 page blocks: the cursor block (or the cold start block), then +1, -1,
+        +2, -2 ...; in a block the LOWEST free page wins. On success the cursor moves to
+        the block of the page found. The page is NOT marked used. Falls back to
+        :meth:`find_first_free_block` when ``bit_address`` is 0. Returns -1 when full.
+        """
+        if self.bit_address == 0:
+            return self.find_first_free_block()
+        ceiling = self._ceiling()
+        if ceiling <= FIRST_ALLOCATABLE_BLOCK:
+            return -1
+        nblocks = (ceiling + 255) >> 8
+        b0 = self._cursor_block if self._cursor_block is not None else self.cold_start_block()
+        if b0 >= nblocks:
+            b0 = nblocks - 1
+        for step in range(nblocks + 1):
+            if step == 0:
+                cands = [b0]
+            else:
+                cands = []
+                if b0 + step < nblocks:
+                    cands.append(b0 + step)
+                if b0 >= step:
+                    cands.append(b0 - step)
+            for b in cands:
+                for k in range(256):
+                    p = (b << 8) + k
+                    if self._page_ok(p, ceiling):
+                        self._cursor_block = b
+                        return p
+        return -1
+
     def find_free_block_range(self, blocks_needed: int) -> int:
         """Find a contiguous run of free blocks, scanning HIGH -> LOW.
 
@@ -287,15 +397,19 @@ class BitFile:
             return b""
         return bytes(self._bitmap)
 
-    def to_page_buffers(self) -> List[bytearray]:
+    def to_page_buffers(self, max_pages: Optional[int] = None) -> List[bytearray]:
         """Write bitmap data into page-aligned buffers for disk writing.
 
         Returns a list of page buffers to write starting at the pointer's block ID.
+        ``max_pages`` limits the count: SINTRAN sizes the bit file from the declared
+        capacity, which can be fewer pages than the device length gives.
         """
         if self._bitmap is None:
             return []
 
         pages_needed = math.ceil(len(self._bitmap) / NDFS_PAGE_SIZE)
+        if max_pages is not None and max_pages < pages_needed:
+            pages_needed = max_pages
         pages: List[bytearray] = []
 
         for i in range(pages_needed):

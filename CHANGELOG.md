@@ -2,6 +2,57 @@
 
 All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndtool`).
 
+## Unreleased - 2026-10-20
+
+Everything here was measured with real SINTRAN M in the nd100x emulator and is written up in
+`docs/CREATE-DIRECTORY-ORACLE.md`, `docs/CREATE-DIRECTORY-PLACEMENT.md` and `docs/NDFS-ALLOCATION-RULES.md`.
+`ndfs-c`, `ndfs-py` and `ndfs-ts` give byte-identical images for the same options (checked with eight cases).
+
+### Changed - images are made the way SINTRAN `@CREATE-DIRECTORY` makes them
+
+* All three ports - the bit file goes at `9 * floor(floor(capacity / 2) / 9)` (answer 0), at
+  `capacity - bit file pages` (answer -1) or at a typed address; it is `ceil(capacity / 16384)` pages and all of
+  them are marked used; the pages from the capacity up to the next multiple of 256 are marked used (not past the
+  end of the device); the user data page, user index block, object data page and object index block are the first
+  four free pages going down from `(BA - 1) OR 15`. Hard disks get an Extended Info Block, floppies none.
+  Unreserved Pages = capacity - 1 - bit file pages - 2 - 1 - the SYSTEM quota. The old template numbers (for
+  example SMD 75 MB object file at 18684) are gone.
+* All three ports - new SCSI 126 MB template (64656 pages with the real last page, which SINTRAN needs), the
+  table of 40 SINTRAN disk type names with controller family, drive and layout length
+  (`ndfs_disk_type_*`, `find_disk_type`, `findDiskType`), image options for any disk type name, and the real boot
+  areas of SMD, Winchester, SCSI and the two floppies with your own boot bytes as an override. Not verified:
+  nobody has booted an image made with the boot code.
+* `ndtool --create` - `list` prints every disk type with directory size, image size, family, drive and test
+  status; `DISC-xx` names; `--bit-file`, `--boot`, `--boot-from`, `--boot-file`. A named type is made at the full
+  SINTRAN layout length, which the emulator's disk controllers need.
+
+### Changed - where new pages go (all three ports)
+
+* Index blocks, sub-index blocks, user pages and object pages use SINTRAN's RSBPG rule (first free page going down
+  from `(BA - 1) OR 15`, then the neighbouring words). Data pages of indexed files and contiguous files of one page
+  use the RSPAG block rule (lowest free page of a 256 page block, then the next block up, down, and so on, starting
+  at the block SINTRAN starts in on a cold start). Contiguous files of two pages or more keep the highest free run.
+  `BitFile` has `bit_address` and the new `find_free_near`, `find_free_hint`, `cold_start_block`,
+  `find_free_data_block` (C: `ndfs_bf_find_free_near`, `_hint`, `_block`).
+
+### Changed - quota
+
+* All three ports - `pages_used` now counts data pages, index and sub-index blocks, and one page for each object data
+  page of the user, as SINTRAN does (checked against a real system pack: 6 of 7 users match exactly). Delete refunds
+  data and index blocks; the object data page stays charged. A new SYSTEM user starts with 1. `ndfs_fsck` Phase 4
+  uses the same count. The reservation grown by a write covers the index blocks and the user's first object page.
+
+### Fixed
+
+* All three ports - the bit file size was taken from the length of the image. SINTRAN takes it from the declared
+  capacity; on a device longer than the capacity (for example DISC-288MB-F, 153576 pages for 140391) the library
+  read one page too many and `write_bit_file` could overwrite the page after the bit file. fsck called that page
+  "referenced but marked free".
+* `ndfs-ts` - the allocation window was never narrowed to the declared capacity.
+* `ndfs-py` - the image creator wrote the default file access of new users at offset 38 instead of 40.
+* Test fixtures in `ndfs-py` and `ndfs-ts` marked pages 0 to 11 in the old byte order and relied on the allocator never
+  reaching them.
+
 ## 0.0.8 - 2026-10-15
 
 ### Fixed - an empty sub-index entry is 512 holes, not a skip

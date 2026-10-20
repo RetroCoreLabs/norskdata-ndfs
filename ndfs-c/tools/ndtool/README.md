@@ -554,8 +554,101 @@ Available templates:
 | `floppy360` | 315 KB | 154 | ND floppy 360 KB |
 | `floppy12` | 1.2 MB | 616 | ND floppy 1.2 MB |
 | `smd75` | 75 MB | 38,400 | SMD hard disk |
-| `winchester74` | 74 MB | 36,360 | Winchester hard disk |
+| `winchester74` | 72 MB | 36,864 | Winchester hard disk (declared capacity 36,396) |
+| `scsi126` | 126 MB | 64,656 | SCSI hard disk (declared capacity 61,036) |
 | `custom` | variable | `--pages N` | Custom page count |
+| `DISC-75MB` etc. | variable | SINTRAN size | A SINTRAN SMD/Winchester disk type by name |
+
+Every size `ndtool --create` can make:
+
+1. **Floppy:** `floppy360` (154 pages, 315 KB) and `floppy12` (616 pages, 1.2 MB). Floppies carry no Extended Info Block.
+2. **Hard disk templates measured on real disks:** `smd75` (38,400 pages), `winchester74` (36,864 pages) and `scsi126` (64,656 pages).
+3. **Any size you choose:** `custom --pages N` (at least 32 pages; images of 1000 pages or less get no Extended Info Block and no boot code).
+   SCSI is the exception: SINTRAN needs the exact 64,656 page size with its real last page, so only `scsi126` works for SCSI.
+4. **A SINTRAN disk type by name:** the table below. Dir pages is the directory size SINTRAN gives the type (its declared capacity).
+   Image pages is the length of the file `ndtool` writes. Where the SINTRAN disk layout is known this is the full layout
+   (cylinders x heads x sectors x 1024 bytes); the emulator's SMD and Winchester controllers pick their geometry from the file
+   length and need it. Names with `?` are valid SINTRAN names whose size is not known, so no image can be made.
+   Tested = in the nd100x emulator real SINTRAN M created a directory on the type or entered an `ndtool` image of it
+   (`ENTER-DIRECTORY`, `DIR`, `CREATE-FILE`).
+
+| Name | Dir pages | Image pages | Image MB | Family | Tested | Drive |
+|---|---|---|---|---|---|---|
+| `DISC-14MB` | 6912 | 6912 | 13.5 | Winchester | yes | CDC 9410 Finch |
+| `DISC-16MB` | 8000 | 8000 | 15.6 | Winchester | no | Micropolis 1304 (ST506) |
+| `DISC-21MB` | 10728 | 10890 | 21.3 | Winchester | yes | CDC 9410 Finch |
+| `DISC-23MB` | 11016 | 11205 | 21.9 | Winchester | yes | Micropolis 1304 (ST506) |
+| `DISC-28MB` | 13648 | 13797 | 26.9 | Winchester | yes | Micropolis 1325 (ST506) |
+| `DISC-45MB` | 22032 | 22410 | 43.8 | Winchester | yes | Micropolis 1304/1325 (ST506) |
+| `DISC-74MB` | 36396 | 36792 | 71.9 | Winchester | yes | Micropolis 1325 (ST506) |
+| `DISC-30MB` | 7389 | 7389 | 14.4 | SMD | no | CDC 9448 CMD big cartridge |
+| `DISC-60MB` | 7389 | 7389 | 14.4 | SMD | no | CDC 9762 SMD (ND-IO) |
+| `DISC-90MB` | 7389 | 7389 | 14.4 | SMD | no | CDC 9448 CMD |
+| `DISC-38MB` | 18486 | 18495 | 36.1 | SMD | yes | CDC 9762 SMD (ND-IO) |
+| `DISC-70MB` | 34765 | 37035 | 72.3 | SMD | yes | CDC 9710 RSD |
+| `DISC-75MB` | 36945 | 37035 | 72.3 | SMD | yes | CDC 9762 SMD |
+| `DISC-2-75MB` | 36945 | 36945 | 72.2 | SMD | no | CDC 9730 MMD (150 MB, sub-divided) |
+| `DISC-3-75MB` | 36945 | 36945 | 72.2 | SMD | no | CDC 9766 SMD (225 MB, sub-divided) |
+| `DISC-140MB-F` | 69530 | 69530 | 135.8 | SMD | no | Fujitsu M2322K |
+| `DISC-2-70MB-F` | 34765 | 34765 | 67.9 | SMD | no | Fujitsu M2322K (140 MB, sub-divided) |
+| `DISC-225MB-R` | 110292 | 110292 | 215.4 | SMD | no | CDC 9766 SMD |
+| `DISC-225MB-F` | 110292 | 110292 | 215.4 | SMD | no | not named in the manual |
+| `DISC-225MB-E` | 110292 | 110292 | 215.4 | SMD | no | not named in the manual |
+| `DISC-225MB-N` | 110292 | 110292 | 215.4 | SMD | no | not named in the manual |
+| `DISC-288MB-R` | 140391 | 140733 | 274.9 | SMD | yes | CDC 9766 SMD |
+| `DISC-288MB-F` | 140391 | 153576 | 300.0 | SMD | yes | CDC 9715 FSD 340 |
+| `DISC-288MB-E` | 140391 | 158210 | 309.0 | SMD | no | CDC 9720 EMD 368 |
+| `DISC-288MB-N` | 140391 | 144025 | 281.3 | SMD | no | not named in the manual |
+| `DISC-4-70MB-R` | 34765 | 34765 | 67.9 | SMD | no | CDC 9766 SMD (280 MB, sub-divided) |
+| `DISC-4-70MB-F` | 34765 | 34765 | 67.9 | SMD | no | CDC 9715 FSD 340 (280 MB, sub-divided) |
+| `DISC-4-70MB-E` | 34765 | 34765 | 67.9 | SMD | no | CDC 9720 EMD 368 (280 MB, sub-divided) |
+| `DISC-4-70MB-N` | 34765 | 34765 | 67.9 | SMD | no | not named in the manual |
+| `DISC-6-70MB-F` | 34765 | 34765 | 67.9 | SMD | no | CDC 9715 FSD 515 (450 MB, sub-divided) |
+| `DISC-6-70MB-N` | 34765 | 34765 | 67.9 | SMD | no | not named in the manual |
+| `DISC-450MB-F` | 220584 | 230364 | 449.9 | SMD | yes | CDC 9715 FSD 515 |
+| `DISC-450MB-N` | 220584 | 223820 | 437.1 | SMD | yes | not named in the manual |
+| `DISC-10MB` | ? | ? | ? | unknown | no | CDC 9427 Hawk cartridge (manual only) |
+| `DISC-33MB` | ? | ? | ? | unknown | no | CDC 9762 SMD, ND-IO (manual only) |
+| `DISC-50MB` | ? | ? | ? | unknown | no | CDC 9448 CMD (manual only) |
+| `DISC-2-225MB-F` | ? | ? | ? | unknown | no | CDC 9715 FSD 515 (450 MB, sub-divided; manual only) |
+| `DISC-2-225MB-E` | ? | ? | ? | unknown | no | NEC D3525-H (450 MB, sub-divided; manual only) |
+| `DISC-6-70MB-E` | ? | ? | ? | unknown | no | NEC D3525-H (450 MB, sub-divided; manual only) |
+| `DISC-450MB-E` | ? | ? | ? | unknown | no | NEC D3525-H (manual only) |
+
+**The letters at the end of a name** (`-R`, `-F`, `-E`, `-N`) are different disk formats of the same nominal size, not different sizes. From the SINTRAN device name list and
+the DISC-TEMA notes: `F` = fixed, `R` = removable, `E` = EMD (drive EMD-9720), `N` = NEC (drive NEC D2352A). Each format has its own heads, sectors per track and cylinders
+(`DISC-288MB`: R 19 x 18 x 823, F 24 x 18 x 711, E 10 x 26 x 1217, N 10 x 35 x 823), so the images differ in length, and the emulator's disk controller must use the same
+geometry as SINTRAN (nd100x: `formatN` key, see its docs/MACHINE-CONFIG-DESIGN.md). A layout table also has `S` formats (288MB-S, 450MB-S, 140MB-S); what `S` stands for is
+not known and no device name with `-S` was found. The System Supervisor manual says the alternatives for a disk type (the sub-divided names such as `DISC-4-70MB-F`, and 225MB) differ only in storage capacity; their layout length is not known here.
+`DISC-450MB-F` here is DT460 (24 x 27 x 711) and `DISC-450MB-N` is DT470 (19 x 31 x 760), as the layout table comments name them.
+
+The letters at the end of the 288 MB and 450 MB names (R, F, E, N for 288 MB; F, N for 450 MB) select different disk formats of the same nominal size. They have different head and sector counts: for example 288MB-R is 19 heads, 18 sectors, 823 cylinders (layout DT288), 288MB-F is 24 heads, 18 sectors, 711 cylinders (DT300), 288MB-E is 10 heads, 26 sectors, 1217 cylinders (DT310) and 288MB-N is 10 heads, 35 sectors, 823 cylinders (DT290). What the letters stand for is not known; the match between letter and layout comes from the comments in SINTRAN's layout table. In the nd100x emulator the disk controller picks the layout from the image length; a format that cannot be told apart by length is set with `format0 = 288MB-F` (or `format0 = DT300`) in the controller section of the .ini file.
+
+Sizes not listed (DISC-30MB, DISC-60MB, DISC-90MB, DISC-2-75MB, DISC-140MB-F and the sub-divided names) are made with the directory
+size as image length, because their SINTRAN layout length is not known. The same list is printed by `ndtool --create list`.
+Example:
+
+```
+$ ndtool --create DISC-75MB --name TESTDISK test.ndfs
+$ ndtool --create DISC-288MB-R --name BIGDISK big.ndfs
+$ ndtool --create custom --pages 20000 --name MIDDISK mid.ndfs
+```
+
+`ndtool --create list` prints every disk type name with its size, controller family, drive model and whether real SINTRAN created a directory on it.
+
+New images follow what SINTRAN itself writes when it creates a directory, adds the first user and creates the first file (measured, see docs/CREATE-DIRECTORY-ORACLE.md):
+hard disks get an Extended Info Block with the declared capacity, floppies do not; the bit file goes where SINTRAN would put it; the SYSTEM user and the object file are placed
+by SINTRAN's free-page search. Options:
+
+| Option | Meaning |
+|---|---|
+| `--bit-file A` | SINTRAN's prompt "OCTAL BIT FILE ADDRESS (-1 END OF DISC)": `0` = default (9 x floor(floor(size/2)/9)), `-1` = end of disc, anything else = an OCTAL page address |
+| `--boot WHAT` | boot area in page 0 bytes 0-1999: `auto` (the default, the real boot area that belongs to the template or disk type family), `none`, `smd`, `winchester`, `scsi`, `floppy360`, `floppy616` |
+| `--boot-from IMG` | copy bytes 0-1999 of page 0 from the image IMG |
+| `--boot-file F` | use the file F (at most 2000 bytes) as the boot area |
+
+The boot areas are copies of real disks. Not verified: nobody has booted an image made this way. The `scsi126` image also carries the real last page, which SINTRAN requires
+(an all-zero last page, or a different length, makes SINTRAN fail with a disk transfer error); what that page contains is not decoded, so only the 64,656 page SCSI size can be made.
 
 Custom size example:
 

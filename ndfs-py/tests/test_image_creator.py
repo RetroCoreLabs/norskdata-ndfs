@@ -38,9 +38,11 @@ class TestFloppy360KB:
         data = create_image(opts)
         ndfs = NdfsFileSystem(data)
         mb = ndfs.get_master_block()
-        assert mb.object_file_pointer.block_id == 149
-        assert mb.user_file_pointer.block_id == 151
-        assert mb.bit_file_pointer.block_id == 153
+        # Where real SINTRAN puts them (docs/CREATE-DIRECTORY-PLACEMENT.md): bit file 9*floor(floor(154/2)/9)=72,
+        # then the four pages from (72-1) OR 15 = 79 going down.
+        assert mb.object_file_pointer.block_id == 76
+        assert mb.user_file_pointer.block_id == 78
+        assert mb.bit_file_pointer.block_id == 72
 
 
 class TestFloppy12MB:
@@ -60,9 +62,9 @@ class TestFloppy12MB:
         data = create_image(opts)
         ndfs = NdfsFileSystem(data)
         mb = ndfs.get_master_block()
-        assert mb.object_file_pointer.block_id == 611
-        assert mb.user_file_pointer.block_id == 613
-        assert mb.bit_file_pointer.block_id == 615
+        assert mb.object_file_pointer.block_id == 316
+        assert mb.user_file_pointer.block_id == 318
+        assert mb.bit_file_pointer.block_id == 306
 
 
 class TestSmd75MB:
@@ -82,8 +84,8 @@ class TestSmd75MB:
         data = create_image(opts)
         ndfs = NdfsFileSystem(data)
         mb = ndfs.get_master_block()
-        assert mb.object_file_pointer.block_id == 18684
-        assert mb.user_file_pointer.block_id == 18686
+        assert mb.object_file_pointer.block_id == 18476
+        assert mb.user_file_pointer.block_id == 18478
         # ALBIT 137526B: floor(36945/2)=18472 rounded DOWN to a multiple of 9 = 18468 --
         # the true PACK-ONE bit_file_ptr. This asserted 18472 (plain pages/2), off by 4.
         assert mb.bit_file_pointer.block_id == 18468
@@ -111,8 +113,8 @@ class TestWinchester74MB:
         ndfs = NdfsFileSystem(data)
         mb = ndfs.get_master_block()
         # Measured from the real Micropolis 1325 images.
-        assert mb.object_file_pointer.block_id == 18428
-        assert mb.user_file_pointer.block_id == 18430
+        assert mb.object_file_pointer.block_id == 18204
+        assert mb.user_file_pointer.block_id == 18206
         assert mb.bit_file_pointer.block_id == 18198  # 9*floor(floor(36396/2)/9)
 
 
@@ -154,12 +156,9 @@ class TestBitmapAllocation:
         ndfs = NdfsFileSystem(data)
         # Block 0 (master) should be used
         assert ndfs.is_block_used(0) is True
-        # Object file block
-        assert ndfs.is_block_used(149) is True
-        # User file block
-        assert ndfs.is_block_used(151) is True
-        # Bit file block
-        assert ndfs.is_block_used(153) is True
+        # Object file index block and data page, user file index block and data page, bit file
+        for page in (76, 77, 78, 79, 72):
+            assert ndfs.is_block_used(page) is True
 
     def test_free_blocks_available(self):
         opts = ImageCreationOptions(template=ImageTemplate.Floppy360KB, directory_name="TEST")

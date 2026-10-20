@@ -87,9 +87,11 @@ def create_test_image(total_pages: int = 50, dir_name: str = "TESTDISK") -> byte
     # Page 11: Bit file (bitmap) - mark pages 0-11 as used
     bitmap_off = 11 * NDFS_PAGE_SIZE
     # Pages 0-7: first byte = 0xFF (bits 0-7)
-    image[bitmap_off] = 0xFF
+    # The bit file is word addressed (page N is bit N%16 of big-endian word N/16), so pages
+    # 0-7 are in the SECOND byte of the pair and pages 8-15 in the first.
+    image[bitmap_off + 1] = 0xFF
     # Pages 8-11: second byte = bits 0-3
-    image[bitmap_off + 1] = 0x0F
+    image[bitmap_off] = 0x0F
 
     return image
 

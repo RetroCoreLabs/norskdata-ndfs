@@ -269,6 +269,42 @@ These are **two different numbers** and must not be conflated:
 
 Verified on the real disk: page 36,944 is used; pages 36,945+ are all free and unreachable.
 
+> **What "declared capacity" is, in plain words (added for ndtool --fsck).**
+> It is one 32-bit number stored on page 0 of the image, in the Extended Info Block at byte
+> offset `0x07DC` (SINTRAN words 1756B-1757B, "Pages Available"). Who writes it, and when:
+> the entering routine `CHDSI` (37763B) READS it and compares it with a figure it derives from
+> the drive geometry; it WRITES it only when the checksum is bad or zero (zero the 8 words,
+> store the geometry figure, recompute the checksum) - both VERIFIED in the kernel bytes (see
+> NDInsight SINTRAN/Filesystem/code-logic/enter-directory.md). It is also written when the
+> directory is CREATED. Read in the carved kernel segment 006-S3FS disassembly
+> (NDInsight tools/sintran-segment-carver/versions/L-VSX-500/re/segments-ref/006-S3FS/006-S3FS.asm):
+> `CRDIR` (136741B) calls `WDIRS` (040221B) at 137403B (the pointer word at 137440B is 040221).
+> `WDIRS` zeroes the 8 extended-info words (loop at 040236B), calls `GSIZE` (037101B) through
+> the pointer word at 040261B, stores the result into words 6-7 (`STD ,X 6` at 040246B) and then
+> calls `WXDIR` through the pointer word at 040263B. What `GSIZE` computes inside is NOT read
+> yet (its source is the drive geometry, per the CHDSI description). What `CHDSI` does when the
+> stored value differs from the geometry figure on a good checksum is also not recorded.
+> The bitmap is as long as the physical device; the declared capacity
+> says how far up SINTRAN may hand out pages. Everything from the capacity to the end of the
+> device is the drive's spare area for bad sectors, so no file can own a page there.
+>
+> **The bits in that spare area are NOT the same on every image.** Measured (read only) on
+> real images, all with 38,400 pages on the device:
+>
+> | Image | Declared capacity | Bits set in spare area |
+> |---|---|---|
+> | BIGDISK0-K-100.IMG | 36,945 | none (all free) |
+> | BIGDISK0-M-103.IMG | 36,945 | all 1,455 |
+> | WD0-SINTRAN-M.IMG | 36,396 | all 2,004 |
+>
+> Who sets those bits on the M-103 and WD0 images is **not known** (not checked in SINTRAN
+> source, not traced). Because of this, `ndtool --fsck` does not call a used bit with no
+> owner at or above the declared capacity an orphan. It counts them and prints one INFO line
+> ("N pages at or above the declared capacity (C) are marked used in the bitmap"). A used bit
+> with no owner BELOW the capacity is still reported as an orphan warning. The code is the
+> `Phase 3` loop in `ndfs_fsck` (ndfs-c/src/filesystem.c); the regression test is
+> `test_fsck_spare_area_marked_used_is_info_not_orphan` in ndfs-c/tests/test_fsck.c.
+
 > **Always clamp the ceiling to the device size.** The real Winchester `WD0.img` declares a
 > capacity of **36,396** pages in a file only **36,360** pages long. Without the clamp, a
 > downward allocator would start at page 36,395 — which does not exist in the file.

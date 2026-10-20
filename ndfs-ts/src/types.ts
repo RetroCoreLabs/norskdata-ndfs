@@ -72,6 +72,26 @@ export enum ImageTemplate {
   Smd75MB = 'smd_75mb',
   Winchester74MB = 'winchester_74mb',
   Custom = 'custom',
+  /** Added after Custom so the existing members keep their order. */
+  Scsi126MB = 'scsi_126mb',
+}
+
+/** Which boot area createNdfsImage writes into page 0, bytes 0 to 1999. */
+export enum BootChoice {
+  /** The boot code that belongs to the template. */
+  Auto = 'auto',
+  /** Leave the boot area all zero (a data disk). */
+  None = 'none',
+  /** Real SMD boot area (K-like layout). */
+  Smd = 'smd',
+  /** Real Winchester boot area (L-like layout). */
+  Winchester = 'winchester',
+  /** Real SCSI boot area (K-like layout). */
+  Scsi = 'scsi',
+  /** Real floppy loader stream, 154 page floppy. */
+  Floppy360 = 'floppy360',
+  /** Real floppy loader stream, 616 page floppy. */
+  Floppy616 = 'floppy616',
 }
 
 /** File type flags (bit field). */
@@ -120,4 +140,12 @@ export interface ImageCreationOptions {
   systemNumber?: number;
   flagWord?: number;
   users?: Array<{ name: string; reservedPages: number }>;
+  /** Boot area. Not verified: nobody has booted an image made with the embedded boot code. */
+  bootChoice?: BootChoice;
+  /** Own boot area (bytes 0..1999 of page 0); wins over bootChoice. */
+  bootData?: Uint8Array;
+  /** SINTRAN's bit file address prompt: 0 = default, -1 = end of disc, n = the page number n. */
+  bitFileAnswer?: number;
+  /** Image length in pages; undefined = the template size. Used with Custom; ignored when smaller than the capacity. */
+  devicePages?: number;
 }

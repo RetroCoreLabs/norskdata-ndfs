@@ -117,14 +117,14 @@ describe('WriteOperations', () => {
     // Create a very small filesystem
     const fs = NdfsFileSystem.createImage({
       template: ImageTemplate.Custom,
-      customPages: 30,
+      customPages: 50,
       directoryName: 'FULL',
     });
 
     // Try to write more data than disk can hold
-    // With 30 pages, system uses ~6, leaving ~24 free
-    // Writing 25 pages of data plus index blocks should fail
-    const hugeData = new Uint8Array(NDFS_PAGE_SIZE * 28);
+    // With 50 pages, system uses ~6, leaving ~44 free
+    // Writing 48 pages of data plus index blocks should fail
+    const hugeData = new Uint8Array(NDFS_PAGE_SIZE * 48);
     hugeData.fill(0xDD);
     expect(() => fs.writeFile('SYSTEM/HUGE:DATA', hugeData)).toThrow();
   });
@@ -150,7 +150,8 @@ describe('WriteOperations', () => {
 
     fs.deleteFile('SYSTEM/DELME:DATA');
     const userAfterDelete = fs.getUser(0)!;
-    expect(userAfterDelete.pagesUsed).toBe(0);
+    // Back to what it was before the file; SYSTEM's object data page (1) stays charged.
+    expect(userAfterDelete.pagesUsed).toBe(1);
   });
 
   it('rename file, verify new name readable', () => {

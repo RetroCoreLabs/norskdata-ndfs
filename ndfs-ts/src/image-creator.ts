@@ -1,5 +1,19 @@
 /**
- * NDFS image creation: builds new disk images from templates.
+ * NDFS image creation: builds new disk images.
+ *
+ * The layout follows what real SINTRAN M writes with @CREATE-DIRECTORY, measured in the nd100x
+ * emulator (docs/CREATE-DIRECTORY-ORACLE.md, docs/CREATE-DIRECTORY-PLACEMENT.md):
+ *
+ * - the bit file goes at the address of SINTRAN's prompt "OCTAL BIT FILE ADDRESS (-1 END OF DISC)":
+ *   0 gives 9 * floor(floor(capacity / 2) / 9), -1 gives capacity minus the bit file pages;
+ * - the bit file is ceil(capacity / 16384) pages and marks page 0, itself, and the pages from the
+ *   capacity up to the next multiple of 256 (not past the end of the device);
+ * - the user data page, user index block, object data page and object index block are the first four
+ *   free pages going down from `(BA - 1) OR 15` (routine RSBPG);
+ * - hard disks get an Extended Info Block with the declared capacity, floppies none.
+ *
+ * Templates: Floppy360KB, Floppy12MB, Smd75MB, Winchester74MB, Scsi126MB and Custom. Any SINTRAN disk
+ * type name can be made with {@link optionsForDiskType}.
  *
  * SPDX-License-Identifier: MIT
  * Copyright (c) 1985-2026 Ronny Hansen
@@ -10,7 +24,6 @@ import {
   NDFS_PAGE_SIZE,
   MASTER_BLOCK_OFFSET,
   EXTENDED_INFO_OFFSET,
-  NDFS_NAME_TERMINATOR,
   NDFS_NAME_MAX,
   ENTRIES_PER_PAGE,
   ENTRY_SIZE,
@@ -20,139 +33,124 @@ import { writeUint16BE, writeUint32BE } from './endian.js';
 import { writeNdfsName } from './ndfs-name.js';
 import { MasterBlock } from './master-block.js';
 import { BlockPointer } from './block-pointer.js';
-import { PointerType, ImageTemplate, ImageCreationOptions } from './types.js';
+import { PointerType, ImageTemplate, BootChoice, ImageCreationOptions } from './types.js';
+import { bootBlob, scsiLastPage } from './boot-blobs.js';
+import { DiskFamily, findDiskType } from './disk-types.js';
 
-/** Internal specification for a disk template. */
+/** What a template fixes. Everything else is worked out from these numbers. */
 interface TemplateSpec {
-  ndfsPages: number;
-  fileBlocks: number;
-  objectFileBlock: number;
-  userFileBlock: number;
-  bitFileBlock: number;
-  unreservedPages: number;
-  isFloppy: boolean;
-  includeExtendedInfo: boolean;
+  /** Declared directory size in pages (Pages Available). */
+  capacity: number;
+  /** Length of the image in pages; never less than capacity. */
+  devicePages: number;
+  /** Hard disk: write the Extended Info Block (floppies have none). */
+  extValid: boolean;
+  /** Boot area written when the caller says Auto. */
+  boot: BootChoice;
+  /** Copy the real SCSI last page (SINTRAN needs it). */
+  scsiLastPage: boolean;
 }
 
-function getTemplateSpec(template: ImageTemplate, customPages?: number): TemplateSpec {
-  switch (template) {
+function getTemplateSpec(options: ImageCreationOptions): TemplateSpec {
+  switch (options.template) {
     case ImageTemplate.Floppy360KB:
-      return {
-        ndfsPages: 154,
-        fileBlocks: 154,
-        objectFileBlock: 149,
-        userFileBlock: 151,
-        bitFileBlock: 153,
-        unreservedPages: 1,
-        isFloppy: true,
-        includeExtendedInfo: false,
-      };
+      return { capacity: 154, devicePages: 154, extValid: false, boot: BootChoice.Floppy360, scsiLastPage: false };
     case ImageTemplate.Floppy12MB:
-      return {
-        ndfsPages: 616,
-        fileBlocks: 616,
-        objectFileBlock: 611,
-        userFileBlock: 613,
-        bitFileBlock: 615,
-        unreservedPages: 1,
-        isFloppy: true,
-        includeExtendedInfo: false,
-      };
-    // Drive geometries below are MEASURED from real ND disk images. Every real drive
-    // reserves a spare (bad-sector remap) region, so fileBlocks (the physical device) is
-    // always LARGER than ndfsPages (the declared, usable capacity) — never smaller.
-    // The spare size is a property of the DRIVE, not a percentage of capacity: the same
-    // 36396-page capacity has 468 spare on the Winchester and a different spare elsewhere.
+      return { capacity: 616, devicePages: 616, extValid: false, boot: BootChoice.Floppy616, scsiLastPage: false };
+    // capacity 36945 is DISC-75MB in SINTRAN's name table; 38400 pages is the file size of the real SMD0.IMG.
     case ImageTemplate.Smd75MB:
-      return {
-        ndfsPages: 36945, // DOCUMENTED: ND-30.003.007, "75 MB disk pack giving 36,945 pages"
-        fileBlocks: 38400, // real device (PACK-ONE / SMD0.IMG); spare = 1455
-        objectFileBlock: 18684,
-        userFileBlock: 18686,
-        // KERNEL-CORRECTED (ALBIT 137526B): floor(36945/2)=18472 rounded DOWN to a multiple
-        // of 9 = 18468 — the true PACK-ONE bit_file_ptr. Plain pages/2 gave 18472, off by 4.
-        bitFileBlock: 18468,
-        unreservedPages: 36945,
-        isFloppy: false,
-        includeExtendedInfo: true,
-      };
+      return { capacity: 36945, devicePages: 38400, extValid: true, boot: BootChoice.Smd, scsiLastPage: false };
+    // Real Micropolis 1325 image: file 36864 pages, declared capacity 36396 (DISC-74MB).
     case ImageTemplate.Winchester74MB:
-      return {
-        ndfsPages: 36396, // DOCUMENTED: ND-30.003.007 DEVICE-COPY, "Pages to copy: 36396"
-        // Real drive: a Micropolis 1325 (5.25" ST-506/MFM), measured across 7 real images —
-        // device 36864 pages = exactly 72.0 MiB, spare 468.
-        // fileBlocks used to be 36360, which was SMALLER than the declared capacity: the
-        // image's last 36 pages did not exist at all.
-        fileBlocks: 36864,
-        objectFileBlock: 18428, // real disk (1325.img)
-        userFileBlock: 18430, // = object + 2
-        bitFileBlock: 18198, // 9*floor(floor(36396/2)/9) = 18198 (ALBIT)
-        unreservedPages: 36396,
-        isFloppy: false,
-        includeExtendedInfo: true,
-      };
+      return { capacity: 36396, devicePages: 36864, extValid: true, boot: BootChoice.Winchester, scsiLastPage: false };
+    // Real SCSI image: SINTRAN accepts a SCSI disk only with exactly this length and the real last page.
+    case ImageTemplate.Scsi126MB:
+      return { capacity: 61036, devicePages: 64656, extValid: true, boot: BootChoice.Scsi, scsiLastPage: true };
     case ImageTemplate.Custom: {
-      if (!customPages || customPages < 20) {
-        throw new Error('Custom template requires at least 20 pages');
+      const pages = options.customPages;
+      if (pages === undefined || pages < 32) {
+        throw new Error('customPages must be specified (>= 32) for Custom template');
       }
-      const pages = customPages;
-      // Floppies carry no valid extended-info block; that is what distinguishes them here.
-      const isFloppy = pages <= 1000;
-
-      // Placement — KERNEL-DERIVED from ALBIT (137517B).
-      //
-      // The old "small disk vs big disk" branch was WRONG: SINTRAN does not switch layout
-      // on device size. It branches on whether @CREATE-DIRECTORY was given an EXPLICIT
-      // bit-file address. A small floppy created on the DEFAULT path still lands mid-disk.
-      // (Two same-size 616-page floppies sit in opposite layouts for exactly this reason.)
-      //
-      // DEFAULT path:  bit_file = 9 * floor(floor(pages / 2) / 9)
-      //   i.e. floor(pages/2) rounded DOWN to a multiple of 9.
-      //   ALBIT 137526B-137532B: /2 -> /9 -> *9.
-      //   Verified on every real disk: 36945 -> 18468, 616 -> 306, 61036 -> 30510.
-      //   Plain pages/2 (18472 for PACK-ONE) is simply wrong.
-      //
-      // The "9" is PAGES PER TRACK (SMD: 18 sectors x 1024 B = 18432 B = 9 pages of 2048),
-      // which is why @CREATE-DIRECTORY says the bit file starts "at a track boundary".
-      //
-      // The object/user base is APPROXIMATE — it comes from the CRDIR scan loop
-      // (137173B-137352B) and has no clean closed form (empirically bit+216 on SMD,
-      // bit+206 on SCSI, bit+202 on floppy). We place object/user clear of the bitmap's own
-      // page span. Only bit-exactness with a SINTRAN-created image is affected; the reader
-      // is pointer-driven and reads any placement correctly.
-      const bitmapBytes = (Math.ceil(pages / 8) + 1) & ~1;
-      const bitmapPages = Math.ceil(bitmapBytes / NDFS_PAGE_SIZE);
-
-      const bitBlock = Math.floor(Math.floor(pages / 2) / 9) * 9;
-      const objBlock = bitBlock + bitmapPages;
-      const usrBlock = objBlock + 2;
-
-      return {
-        ndfsPages: pages,
-        fileBlocks: pages,
-        objectFileBlock: objBlock,
-        userFileBlock: usrBlock,
-        bitFileBlock: bitBlock,
-        unreservedPages: isFloppy ? 1 : pages,
-        isFloppy,
-        includeExtendedInfo: !isFloppy,
-      };
+      const boot =
+        pages === 154 ? BootChoice.Floppy360 : pages === 616 ? BootChoice.Floppy616 : BootChoice.None;
+      let devicePages = pages;
+      if (options.devicePages !== undefined && options.devicePages > devicePages) {
+        devicePages = options.devicePages;
+      }
+      // Floppy sized images carry no Extended Info Block.
+      return { capacity: pages, devicePages, extValid: pages > 1000, boot, scsiLastPage: false };
     }
     default:
-      throw new Error(`Unknown template: ${template}`);
+      throw new Error(`Unknown template: ${options.template}`);
   }
 }
 
 /**
- * Calculate spare blocks for a given template.
+ * Image options for a SINTRAN disk type name such as `DISC-288MB-R`.
+ *
+ * The image has the directory size SINTRAN gives the type and the full disk layout length where that
+ * is known (the emulator's disk controllers pick their geometry from the file length). The boot area is
+ * the one of the controller family. Throws for an unknown name or one whose size is not known.
  */
-function getSpareBlocks(template: ImageTemplate, pages: number): number {
-  switch (template) {
-    case ImageTemplate.Smd75MB:
-      return Math.floor(pages * 0.0394);
-    default:
-      return 0;
+export function optionsForDiskType(name: string, directoryName?: string): ImageCreationOptions {
+  const t = findDiskType(name);
+  if (!t) throw new Error(`Unknown SINTRAN disk type: ${name}`);
+  if (t.pages === 0) throw new Error(`${t.name} is a valid SINTRAN disk type name but its size is not known`);
+  const boot =
+    t.family === DiskFamily.Smd
+      ? BootChoice.Smd
+      : t.family === DiskFamily.Winchester
+        ? BootChoice.Winchester
+        : BootChoice.Auto;
+  return {
+    template: ImageTemplate.Custom,
+    directoryName,
+    customPages: t.pages,
+    devicePages: t.layoutPages > t.pages ? t.layoutPages : undefined,
+    includeExtendedInfo: t.pages > 1000,
+    bootChoice: boot,
+  };
+}
+
+function markPageUsed(bitmap: Uint8Array, page: number): void {
+  // Same addressing as BitFile: page N is bit N%16 of the 16-bit big-endian word N/16, which on a
+  // byte array is byte (N>>3)^1, bit N&7.
+  bitmap[(page >>> 3) ^ 1] |= 1 << (page & 7);
+}
+
+function pageIsUsed(bitmap: Uint8Array, page: number): boolean {
+  return ((bitmap[(page >>> 3) ^ 1] >>> (page & 7)) & 1) === 1;
+}
+
+/**
+ * RSBPG rule (see BitFile.findFreeNear): the first free page going down from `hint OR 15`, then word+1
+ * up, word-1 down, ... Marks the page used. Returns -1 if none.
+ */
+function allocNearHint(bitmap: Uint8Array, capacity: number, hint: number): number {
+  const word = hint >>> 4;
+  const nwords = (capacity + 15) >>> 4;
+  const ok = (p: number): boolean => p < capacity && !pageIsUsed(bitmap, p);
+  for (let bit = 15; bit >= 0; bit--) {
+    const p = word * 16 + bit;
+    if (ok(p)) { markPageUsed(bitmap, p); return p; }
   }
+  for (let step = 1; step <= nwords; step++) {
+    let w = word + step;
+    if (w < nwords) {
+      for (let bit = 0; bit < 16; bit++) {
+        const p = w * 16 + bit;
+        if (ok(p)) { markPageUsed(bitmap, p); return p; }
+      }
+    }
+    if (word >= step) {
+      w = word - step;
+      for (let bit = 15; bit >= 0; bit--) {
+        const p = w * 16 + bit;
+        if (ok(p)) { markPageUsed(bitmap, p); return p; }
+      }
+    }
+  }
+  return -1;
 }
 
 /**
@@ -160,154 +158,123 @@ function getSpareBlocks(template: ImageTemplate, pages: number): number {
  * Returns the raw image buffer.
  */
 export function createNdfsImage(options: ImageCreationOptions): Uint8Array {
-  const spec = getTemplateSpec(options.template, options.customPages);
+  const spec = getTemplateSpec(options);
+  const cap = spec.capacity;
+  const dev = spec.devicePages;
   const dirName = (options.directoryName || 'NDFS').toUpperCase().substring(0, NDFS_NAME_MAX);
-  const includeExt = options.includeExtendedInfo !== undefined
-    ? options.includeExtendedInfo
-    : spec.includeExtendedInfo;
 
-  // Allocate zero-filled buffer
-  const imageSize = spec.fileBlocks * NDFS_PAGE_SIZE;
-  const image = new Uint8Array(imageSize);
+  // The bit file: one bit per page, 16384 bits per page, sized by the declared capacity.
+  const bitmapPages = Math.floor((cap + 16383) / 16384);
 
-  // ---- Page 0: Master block at offset 2016 ----
+  // Bit file address, the answer to SINTRAN's prompt "OCTAL BIT FILE ADDRESS (-1 END OF DISC)".
+  const answer = options.bitFileAnswer ?? 0;
+  let ba: number;
+  if (answer === 0) ba = 9 * Math.floor(Math.floor(cap / 2) / 9);
+  else if (answer === -1) ba = cap - bitmapPages;
+  else if (answer > 0) ba = answer;
+  else throw new Error('bitFileAnswer must be 0, -1 or a page address');
+  if (ba < 8 || ba + bitmapPages > cap) throw new Error('bit file address outside the disk');
+
+  // Pages left for the user quota: capacity - page 0 - the bit file - the user file (index block + data
+  // page) - the object file index block. Unreserved Pages is this minus the sum of the user quotas.
+  if (cap < 40 + bitmapPages) throw new Error('disk too small');
+  const avail = cap - 1 - bitmapPages - 2 - 1;
+  const quota = cap > 1000 ? Math.floor(cap / 2) : Math.min(avail, 500);
+
+  const image = new Uint8Array(dev * NDFS_PAGE_SIZE);
+
+  // Bitmap, as @CREATE-DIRECTORY leaves it, then the four pages the first user and the first file take.
+  const bm = new Uint8Array(bitmapPages * NDFS_PAGE_SIZE);
+  markPageUsed(bm, 0);
+  for (let i = 0; i < bitmapPages; i++) markPageUsed(bm, ba + i);
+  if (spec.extValid && dev > cap) {
+    // When the device is longer than the capacity SINTRAN marks the pages from the capacity up to the
+    // next multiple of 256 as used (not past the end of the device).
+    const end = Math.min(Math.ceil(cap / 256) * 256, dev);
+    for (let i = cap; i < end; i++) markPageUsed(bm, i);
+  }
+  const userData = allocNearHint(bm, cap, ba - 1);
+  const userIndex = allocNearHint(bm, cap, ba - 1);
+  const objData = allocNearHint(bm, cap, ba - 1);
+  const objIndex = allocNearHint(bm, cap, ba - 1);
+  if (Math.min(userData, userIndex, objData, objIndex) < 0) throw new Error('no space for the directory files');
+
+  // Boot area: bytes 0..1999 of page 0.
+  const boot = options.bootChoice === undefined || options.bootChoice === BootChoice.Auto
+    ? spec.boot
+    : options.bootChoice;
+  if (options.bootData && options.bootData.length > 0) {
+    image.set(options.bootData.subarray(0, Math.min(options.bootData.length, 2000)), 0);
+  } else if (boot !== BootChoice.None && boot !== BootChoice.Auto) {
+    image.set(bootBlob(boot), 0);
+  }
+
+  // Page 0: master block (and Extended Info Block on hard disks).
   const mbOff = MASTER_BLOCK_OFFSET;
-
-  // Directory name
   writeNdfsName(image, mbOff, dirName, NDFS_NAME_MAX);
+  new BlockPointer(objIndex, PointerType.Indexed).toBytes(image, mbOff + 0x10);
+  new BlockPointer(userIndex, PointerType.Indexed).toBytes(image, mbOff + 0x14);
+  new BlockPointer(ba, PointerType.Contiguous).toBytes(image, mbOff + 0x18);
+  writeUint32BE(image, mbOff + 0x1c, avail - quota);
 
-  // Object file pointer (Indexed)
-  const objPtr = new BlockPointer(spec.objectFileBlock, PointerType.Indexed);
-  objPtr.toBytes(image, mbOff + 0x10);
-
-  // User file pointer (Indexed)
-  const usrPtr = new BlockPointer(spec.userFileBlock, PointerType.Indexed);
-  usrPtr.toBytes(image, mbOff + 0x14);
-
-  // Bit file pointer (Contiguous)
-  const bitPtr = new BlockPointer(spec.bitFileBlock, PointerType.Contiguous);
-  bitPtr.toBytes(image, mbOff + 0x18);
-
-  // Unreserved pages
-  writeUint32BE(image, mbOff + 0x1c, spec.unreservedPages);
-
-  // ---- Extended info at offset 2000 (hard disks only) ----
-  if (includeExt) {
+  const writeExt = options.includeExtendedInfo === true || (spec.extValid && options.includeExtendedInfo !== false);
+  if (writeExt) {
     const ext = EXTENDED_INFO_OFFSET;
     const sysNum = options.systemNumber || 0;
     const flagWord = options.flagWord || 0;
-    const pagesAvailable = spec.ndfsPages;
-
     writeUint16BE(image, ext + 2, 0); // reserved1
     writeUint16BE(image, ext + 4, 0); // reserved2
     writeUint16BE(image, ext + 6, 0); // reserved3
     writeUint16BE(image, ext + 8, flagWord);
     writeUint16BE(image, ext + 10, sysNum);
-    writeUint32BE(image, ext + 12, pagesAvailable);
-
-    // Kernel-correct checksum: a 16-bit ADDITIVE sum of the seven words following the
-    // checksum slot (reserved1-3 = 0, flag, system#, pages-hi, pages-lo). NOT XOR-then-add
-    // — see MasterBlock.computeExtChecksum (WXDIR 37702B / CHDSI 37763B).
-    const pagesLo = pagesAvailable & 0xffff;
-    const pagesHi = (pagesAvailable >>> 16) & 0xffff;
-    const checksum = MasterBlock.computeExtChecksum(0, 0, 0, flagWord, sysNum, pagesHi, pagesLo);
-    writeUint16BE(image, ext, checksum);
+    writeUint32BE(image, ext + 12, cap);
+    // Kernel-correct checksum: a 16-bit ADDITIVE sum of the seven words following the checksum slot.
+    const pagesLo = cap & 0xffff;
+    const pagesHi = (cap >>> 16) & 0xffff;
+    writeUint16BE(image, ext, MasterBlock.computeExtChecksum(0, 0, 0, flagWord, sysNum, pagesHi, pagesLo));
   }
 
-  // ---- Bitmap: mark system blocks as used ----
-  const bitmapOff = spec.bitFileBlock * NDFS_PAGE_SIZE;
-
-  // Helper to mark a block used in bitmap
-  const markUsed = (blockId: number): void => {
-    if (blockId >= spec.fileBlocks) return;
-    // Must match BitFile.bitPosition: page N is bit N%16 of the 16-bit big-endian word
-    // N/16, i.e. byte (N>>3)^1 on a byte array. This was a second, independent copy of
-    // the arithmetic; when the bit order was corrected the copy would otherwise have
-    // been left behind, marking a new image's reserved pages in one convention while
-    // reading them back in the other.
-    const byteIdx = (blockId >>> 3) ^ 1;
-    const bitIdx = blockId & 7;
-    image[bitmapOff + byteIdx] |= (1 << bitIdx);
-  };
-
-  // Mark page 0 (master block)
-  markUsed(0);
-
-  // Object file: index block + 1 data block
-  markUsed(spec.objectFileBlock);
-  const objDataBlock = spec.objectFileBlock + 1;
-  markUsed(objDataBlock);
-
-  // User file: index block + 1 data block
-  markUsed(spec.userFileBlock);
-  const usrDataBlock = spec.userFileBlock + 1;
-  markUsed(usrDataBlock);
-
-  // Bit file block
-  markUsed(spec.bitFileBlock);
-
-  // ---- Object file index block: one pointer to data block ----
-  const objIdxOff = spec.objectFileBlock * NDFS_PAGE_SIZE;
-  const objDataPtr = new BlockPointer(objDataBlock, PointerType.Contiguous);
-  objDataPtr.toBytes(image, objIdxOff);
-
-  // Object file data block is already zero (no files)
-
-  // ---- User file index block: one pointer to data block ----
-  const usrIdxOff = spec.userFileBlock * NDFS_PAGE_SIZE;
-  const usrDataPtr = new BlockPointer(usrDataBlock, PointerType.Contiguous);
-  usrDataPtr.toBytes(image, usrIdxOff);
-
-  // ---- User file data block: create SYSTEM user (index 0) ----
-  const usrDataOff = usrDataBlock * NDFS_PAGE_SIZE;
-  image[usrDataOff + 0] = USER_ENTRY_FLAG; // 0x81 = valid user
-  image[usrDataOff + 1] = 0; // enter count
-
-  // User name "SYSTEM"
-  writeNdfsName(image, usrDataOff + 2, 'SYSTEM', NDFS_NAME_MAX);
-
-  // Password = 0
-  writeUint16BE(image, usrDataOff + 18, 0);
-
-  // Default quota: pages reserved
-  const defaultQuota = Math.min(spec.ndfsPages, 1000);
-  writeUint32BE(image, usrDataOff + 28, defaultQuota);
-
-  // Pages used = 0
-  writeUint32BE(image, usrDataOff + 32, 0);
-
-  // Directory index = 0
-  image[usrDataOff + 36] = 0;
-
-  // User index = 0
-  image[usrDataOff + 37] = 0;
-
-  // Default file access = 0x04FF. Offset 40, NOT 38 -- offsets 38-39 are an
-  // unused gap (see UserEntry.fromBytes/toBytes); writing to +38 landed the
-  // value where nothing ever reads it, so a freshly created image's SYSTEM
-  // user read defaultFileAccess as 0 and every new file fell through to the
-  // restrictive ACCESS_DEFAULT (0x03FF, PUBLIC nothing) -- the exact
-  // invisible-to-SYSTEM shape ACCESS_PUBLIC_READ exists to work around.
-  writeUint16BE(image, usrDataOff + 40, 0x04ff);
-
-  // Add optional extra users
+  // User file: index block -> data page with the SYSTEM entry. SYSTEM is charged the object data page.
+  new BlockPointer(userData, PointerType.Contiguous).toBytes(image, userIndex * NDFS_PAGE_SIZE);
+  const usrDataOff = userData * NDFS_PAGE_SIZE;
+  writeUserEntry(image, usrDataOff, 0, 'SYSTEM', quota, 1);
   if (options.users) {
     for (let u = 0; u < options.users.length; u++) {
-      const userOpt = options.users[u];
       const slotIndex = u + 1; // 0 is SYSTEM
       if (slotIndex >= ENTRIES_PER_PAGE) break;
-
-      const entryOff = usrDataOff + slotIndex * ENTRY_SIZE;
-      image[entryOff] = USER_ENTRY_FLAG;
-      writeNdfsName(image, entryOff + 2, userOpt.name.toUpperCase(), NDFS_NAME_MAX);
-      writeUint16BE(image, entryOff + 18, 0); // no password
-      writeUint32BE(image, entryOff + 28, userOpt.reservedPages);
-      writeUint32BE(image, entryOff + 32, 0);
-      image[entryOff + 36] = 0;
-      image[entryOff + 37] = slotIndex;
-      writeUint16BE(image, entryOff + 40, 0x04ff); // offset 40, not 38 -- see SYSTEM's entry above
+      const userOpt = options.users[u];
+      writeUserEntry(image, usrDataOff + slotIndex * ENTRY_SIZE, slotIndex, userOpt.name.toUpperCase(), userOpt.reservedPages, 0);
     }
   }
 
+  // Object file: index block -> data page (no files yet, all zero).
+  new BlockPointer(objData, PointerType.Contiguous).toBytes(image, objIndex * NDFS_PAGE_SIZE);
+
+  // Bit file.
+  image.set(bm, ba * NDFS_PAGE_SIZE);
+
+  // SCSI: the last page the real disks carry.
+  if (spec.scsiLastPage) image.set(scsiLastPage(), (dev - 1) * NDFS_PAGE_SIZE);
+
   return image;
+}
+
+function writeUserEntry(
+  image: Uint8Array,
+  off: number,
+  userIndex: number,
+  name: string,
+  reservedPages: number,
+  usedPages: number,
+): void {
+  image[off] = USER_ENTRY_FLAG; // 0x81 = valid user
+  image[off + 1] = 0; // enter count
+  writeNdfsName(image, off + 2, name, NDFS_NAME_MAX);
+  writeUint16BE(image, off + 18, 0); // no password
+  writeUint32BE(image, off + 28, reservedPages);
+  writeUint32BE(image, off + 32, usedPages);
+  image[off + 36] = 0; // directory index
+  image[off + 37] = userIndex;
+  // Default file access 0x04FF at offset 40, NOT 38 (offsets 38-39 are an unused gap).
+  writeUint16BE(image, off + 40, 0x04ff);
 }

@@ -13,7 +13,7 @@ from ndfs.types import BootFormat, BootControllerType
 from ndfs.constants import NDFS_PAGE_SIZE
 from ndfs.filesystem import NdfsFileSystem
 from ndfs.image_creator import create_image
-from ndfs.types import ImageTemplate, ImageCreationOptions
+from ndfs.types import ImageTemplate, ImageCreationOptions, BootChoice
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 BOOT_SECTOR_DIR = os.path.join(
@@ -298,6 +298,7 @@ class TestFilesystemBootMethods:
         opts = ImageCreationOptions(
             template=ImageTemplate.Floppy360KB,
             directory_name="NOBOOT",
+            boot_choice=BootChoice.NONE,
         )
         ndfs = NdfsFileSystem.create_image(opts)
         assert ndfs.is_bootable() is False
@@ -306,6 +307,7 @@ class TestFilesystemBootMethods:
         opts = ImageCreationOptions(
             template=ImageTemplate.Floppy360KB,
             directory_name="NOBOOT",
+            boot_choice=BootChoice.NONE,
         )
         ndfs = NdfsFileSystem.create_image(opts)
         fmt = ndfs.detect_boot_format()
@@ -315,6 +317,7 @@ class TestFilesystemBootMethods:
         opts = ImageCreationOptions(
             template=ImageTemplate.Floppy360KB,
             directory_name="NOBOOT",
+            boot_choice=BootChoice.NONE,
         )
         ndfs = NdfsFileSystem.create_image(opts)
         boot = ndfs.load_boot_code()

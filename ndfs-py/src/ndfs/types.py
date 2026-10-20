@@ -75,6 +75,18 @@ class ImageTemplate(enum.Enum):
     Smd75MB = "smd_75mb"
     Winchester74MB = "winchester_74mb"
     Custom = "custom"
+    Scsi126MB = "scsi_126mb"      #: added after Custom so the existing members keep their order
+
+
+class BootChoice(enum.Enum):
+    """Which boot area create_image writes into page 0, bytes 0 to 1999."""
+    AUTO = "auto"                #: the boot code that belongs to the template
+    NONE = "none"                #: leave the boot area all zero (a data disk)
+    SMD = "smd"                  #: real SMD boot area (K-like layout)
+    WINCHESTER = "winchester"    #: real Winchester boot area (L-like layout)
+    SCSI = "scsi"                #: real SCSI boot area (K-like layout)
+    FLOPPY360 = "floppy360"      #: real floppy loader stream, 154 page floppy
+    FLOPPY616 = "floppy616"      #: real floppy loader stream, 616 page floppy
 
 
 class FileTypeFlags(enum.IntFlag):
@@ -133,3 +145,12 @@ class ImageCreationOptions:
     system_number: Optional[int] = None
     flag_word: Optional[int] = None
     users: List[UserCreationInfo] = field(default_factory=list)
+    #: Boot area. Not verified: nobody has booted an image made with the embedded boot code.
+    boot_choice: BootChoice = BootChoice.AUTO
+    #: Own boot area (bytes 0..1999 of page 0); wins over boot_choice.
+    boot_data: Optional[bytes] = None
+    #: SINTRAN's bit file address prompt: 0 = default, -1 = end of disc, n = the page number n.
+    bit_file_answer: int = 0
+    #: Image length in pages; None = the template size. Used with Custom; ignored when smaller
+    #: than the capacity.
+    device_pages: Optional[int] = None

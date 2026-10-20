@@ -26,6 +26,7 @@ extern void run_boot_loader_tests(void);
 extern void run_sintran_tests(void);
 extern void run_write_comprehensive_tests(void);
 extern void run_fsck_tests(void);
+extern void run_alloc_rules_tests(void);
 extern void run_contiguous_file_tests(void);
 extern void run_xat_tests(void);
 extern void run_xat_copy_tests(void);
@@ -54,6 +55,7 @@ int main(void)
     run_sintran_tests();
     run_write_comprehensive_tests();
     run_fsck_tests();
+    run_alloc_rules_tests();
     run_contiguous_file_tests();
     run_xat_tests();
     run_xat_copy_tests();

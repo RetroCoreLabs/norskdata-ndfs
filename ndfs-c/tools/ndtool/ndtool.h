@@ -33,6 +33,10 @@ typedef struct {
     const char *filter_user;  /* -u USER filter */
     const char *filter_file;  /* -F FILE/glob filter (wildcards on extract) */
     const char *dest_user;    /* --dest USER: destination for multi-file --put */
+    const char *create_bit_file;  /* --bit-file ANSWER: SINTRAN prompt answer, 0 / -1 / octal address */
+    const char *create_boot;      /* --boot none|auto|smd|winchester|scsi|floppy360|floppy616 */
+    const char *create_boot_from; /* --boot-from IMAGE: copy bytes 0..1999 of this image */
+    const char *create_boot_file; /* --boot-file FILE: boot area bytes from this file */
     ndtool_on_exist_t on_exist; /* collision policy for existing targets */
     bool modified;
     bool use_xat;       /* --xat: write/read .xat sidecar files */

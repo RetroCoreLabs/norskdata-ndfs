@@ -19,10 +19,12 @@ describe('ImageCreator', () => {
         directoryName: 'TEST360',
       });
       const mb = fs.getMasterBlock();
-      expect(mb.objectFilePointer!.blockId).toBe(149);
-      expect(mb.userFilePointer!.blockId).toBe(151);
-      expect(mb.bitFilePointer!.blockId).toBe(153);
-      expect(mb.unreservedPages).toBe(1);
+      // Where real SINTRAN puts them (docs/CREATE-DIRECTORY-PLACEMENT.md): bit file
+      // 9*floor(floor(154/2)/9) = 72, then the four pages from (72-1) OR 15 = 79 going down.
+      expect(mb.objectFilePointer!.blockId).toBe(76);
+      expect(mb.userFilePointer!.blockId).toBe(78);
+      expect(mb.bitFilePointer!.blockId).toBe(72);
+      expect(mb.unreservedPages).toBe(0);
     });
 
     it('has SYSTEM user after creation', () => {
@@ -52,22 +54,22 @@ describe('ImageCreator', () => {
         template: ImageTemplate.Floppy360KB,
       });
       expect(fs.isBlockUsed(0)).toBe(true);       // master block
-      expect(fs.isBlockUsed(149)).toBe(true);      // obj index
-      expect(fs.isBlockUsed(150)).toBe(true);      // obj data
-      expect(fs.isBlockUsed(151)).toBe(true);      // usr index
-      expect(fs.isBlockUsed(152)).toBe(true);      // usr data
-      expect(fs.isBlockUsed(153)).toBe(true);      // bit file
+      expect(fs.isBlockUsed(76)).toBe(true);       // obj index
+      expect(fs.isBlockUsed(77)).toBe(true);       // obj data
+      expect(fs.isBlockUsed(78)).toBe(true);       // usr index
+      expect(fs.isBlockUsed(79)).toBe(true);       // usr data
+      expect(fs.isBlockUsed(72)).toBe(true);       // bit file
     });
 
-    it('pointers are near end of disk', () => {
+    it('pointers are in the middle of the disk, as SINTRAN puts them', () => {
       const fs = NdfsFileSystem.createImage({
         template: ImageTemplate.Floppy360KB,
       });
       const mb = fs.getMasterBlock();
-      // Floppy pointers should be near the end (page 154 total)
-      expect(mb.objectFilePointer!.blockId).toBeGreaterThan(140);
-      expect(mb.userFilePointer!.blockId).toBeGreaterThan(140);
-      expect(mb.bitFilePointer!.blockId).toBeGreaterThan(140);
+      // Not near the end: the bit file is at half the capacity, rounded down to a multiple of 9.
+      expect(mb.bitFilePointer!.blockId).toBeLessThan(80);
+      expect(mb.objectFilePointer!.blockId).toBeGreaterThan(mb.bitFilePointer!.blockId);
+      expect(mb.userFilePointer!.blockId).toBeGreaterThan(mb.objectFilePointer!.blockId);
     });
 
     it('can write files to the created image', () => {
@@ -90,9 +92,9 @@ describe('ImageCreator', () => {
       });
       expect(fs.getDirectoryName()).toBe('FLOPPY12');
       const mb = fs.getMasterBlock();
-      expect(mb.objectFilePointer!.blockId).toBe(611);
-      expect(mb.userFilePointer!.blockId).toBe(613);
-      expect(mb.bitFilePointer!.blockId).toBe(615);
+      expect(mb.objectFilePointer!.blockId).toBe(316);
+      expect(mb.userFilePointer!.blockId).toBe(318);
+      expect(mb.bitFilePointer!.blockId).toBe(306);
     });
 
     it('has correct free page count', () => {
@@ -100,7 +102,7 @@ describe('ImageCreator', () => {
         template: ImageTemplate.Floppy12MB,
       });
       const usedPages = fs.getUsedPages();
-      // 6 system blocks used: 0, 611, 612, 613, 614, 615
+      // 6 system blocks used: 0, the bit file 306 and the four pages 316 to 319
       expect(usedPages).toBe(6);
       expect(fs.getFreePages()).toBe(616 - 6);
     });
@@ -133,12 +135,13 @@ describe('ImageCreator', () => {
         template: ImageTemplate.Smd75MB,
       });
       const mb = fs.getMasterBlock();
-      expect(mb.objectFilePointer!.blockId).toBe(18684);
-      expect(mb.userFilePointer!.blockId).toBe(18686);
+      expect(mb.objectFilePointer!.blockId).toBe(18476);
+      expect(mb.userFilePointer!.blockId).toBe(18478);
       // ALBIT 137526B: floor(36945/2)=18472 rounded DOWN to a multiple of 9 = 18468 — the
       // true PACK-ONE bit_file_ptr. This previously asserted 18472 (plain pages/2), off by 4.
       expect(mb.bitFilePointer!.blockId).toBe(18468);
-      expect(mb.unreservedPages).toBe(36945);
+      // capacity - 1 - bitmap pages - 2 - 1 - the SYSTEM quota: 36945-1-3-2-1-18472
+      expect(mb.unreservedPages).toBe(18466);
     });
 
     it('pointers are spread out on hard disk', () => {
@@ -161,8 +164,8 @@ describe('ImageCreator', () => {
       const mb = fs.getMasterBlock();
       // Real Winchester drive = a Micropolis 1325 (5.25" ST-506/MFM), measured across 7
       // real images: device 36864 pages (72.0 MiB), capacity 36396, spare 468.
-      expect(mb.objectFilePointer!.blockId).toBe(18428);
-      expect(mb.userFilePointer!.blockId).toBe(18430);
+      expect(mb.objectFilePointer!.blockId).toBe(18204);
+      expect(mb.userFilePointer!.blockId).toBe(18206);
       expect(mb.bitFilePointer!.blockId).toBe(18198); // 9*floor(floor(36396/2)/9)
     });
   });
@@ -180,10 +183,11 @@ describe('ImageCreator', () => {
       // branches on whether an explicit bit-file address was given, NOT on device size, so
       // a small volume on the DEFAULT path still lands mid-disk:
       //   bit = 9*floor(floor(200/2)/9) = 9*floor(100/9) = 9*11 = 99
-      //   obj = bit + bitmapPages(1) = 100, usr = obj + 2 = 102
+      // then the four pages from (99-1) OR 15 = 111 going down: 111 user data, 110 user index,
+      // 109 object data, 108 object index.
       expect(mb.bitFilePointer!.blockId).toBe(99);
-      expect(mb.objectFilePointer!.blockId).toBe(100);
-      expect(mb.userFilePointer!.blockId).toBe(102);
+      expect(mb.objectFilePointer!.blockId).toBe(108);
+      expect(mb.userFilePointer!.blockId).toBe(110);
     });
 
     it('creates a custom-sized hard disk image', () => {
@@ -196,10 +200,11 @@ describe('ImageCreator', () => {
       const mb = fs.getMasterBlock();
       // ALBIT default path: bit = 9*floor(floor(5000/2)/9) = 9*floor(2500/9) = 9*277 = 2493.
       // (Plain pages/2 gave 2500 — the old, wrong formula.)
-      // obj = bit + bitmapPages(1) = 2494, usr = obj + 2 = 2496.
+      // The four pages: (2493-1) OR 15 = 2495 user data, 2494 user index, 2493 is the bit file so
+      // 2492 object data, 2491 object index.
       expect(mb.bitFilePointer!.blockId).toBe(2493);
-      expect(mb.objectFilePointer!.blockId).toBe(2494);
-      expect(mb.userFilePointer!.blockId).toBe(2496);
+      expect(mb.objectFilePointer!.blockId).toBe(2491);
+      expect(mb.userFilePointer!.blockId).toBe(2494);
     });
 
     it('verifies all fields on custom image', () => {

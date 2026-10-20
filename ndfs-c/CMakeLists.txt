@@ -25,6 +25,7 @@ set(NDFS_SOURCES
     src/filesystem.c
     src/backend_stdio.c
     src/image_creator.c
+    src/boot_blobs.c
     src/boot_loader.c
     src/sintran.c
     src/xat.c
@@ -73,6 +74,7 @@ set(TEST_SOURCES
     tests/test_sintran.c
     tests/test_write_comprehensive.c
     tests/test_fsck.c
+    tests/test_alloc_rules.c
     tests/test_contiguous_files.c
     tests/test_xat.c
     tests/test_xat_copy.c

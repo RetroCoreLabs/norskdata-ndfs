@@ -23,6 +23,8 @@ export * from './object-file.js';
 export * from './access-permissions.js';
 export * from './access-control.js';
 export * from './image-creator.js';
+export * from './disk-types.js';
+export * from './boot-blobs.js';
 export * from './boot-loader.js';
 export * as sintran from './sintran.js';
 export * from './parity.js';

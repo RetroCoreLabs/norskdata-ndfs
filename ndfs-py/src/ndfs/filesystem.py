@@ -301,6 +301,10 @@ class NdfsFileSystem:
         # filesystem overhead, not user data -- see
         # _count_real_data_pages_in_buffer / _count_real_data_pages_for_object.
         total_required = self._count_real_data_pages_in_buffer(file_data, holes)
+        # Index and sub-index blocks are charged like data pages (SINTRAN, measured), so the
+        # reservation must cover them too.
+        _data_pages = max(1, math.ceil(len(file_data) / NDFS_PAGE_SIZE))
+        total_required += self._structural_pages_for(_data_pages)
 
         # Check for existing file. The TYPE is part of a SINTRAN file's
         # identity, so it has to be passed: without it AAA:MODE and AAA:LIST
@@ -318,8 +322,12 @@ class NdfsFileSystem:
             # oversized write.
             additional_needed = 0
         elif existing is not None:
-            existing_total = self._count_real_data_pages_for_object(existing)
+            existing_total = self._count_charged_pages_for_object(existing)
             additional_needed = total_required - existing_total if total_required > existing_total else 0
+
+        # The first file of a user also needs the user's first object data page.
+        if existing is None and self._count_user_object_pages(user.user_index) == 0:
+            additional_needed += 1
 
         # Check and expand quota if needed
         if additional_needed > 0:
@@ -354,7 +362,7 @@ class NdfsFileSystem:
         # bytes, but we compute this first regardless so the refund reflects
         # the file's actual on-disk footprint rather than any structural
         # overhead. See _count_real_data_pages_for_object.
-        real_pages_freed = self._count_real_data_pages_for_object(obj)
+        real_pages_freed = self._count_charged_pages_for_object(obj)
 
         # Free blocks
         if obj.file_pointer is not None and obj.file_pointer.block_id > 0:
@@ -976,6 +984,7 @@ class NdfsFileSystem:
         if mb.bit_file_pointer is not None and mb.bit_file_pointer.is_valid():
             total_pages = len(self._data) // NDFS_PAGE_SIZE
             self._bit_file.initialize(total_pages)
+            self._bit_file.bit_address = mb.bit_file_pointer.block_id
 
             # Bound the ALLOCATION window by the directory's declared capacity
             # (ext_pages_available, words 1756B-1757B) when the extended-info block is
@@ -1002,13 +1011,16 @@ class NdfsFileSystem:
             # ceil(pages/8) bytes, and the pages living in its high byte would be cut off
             # - a 616-page floppy loses pages 608..615 exactly this way.
             bitmap_bytes = (math.ceil(total_pages / 8) + 1) & ~1
-            bitmap_pages = math.ceil(bitmap_bytes / NDFS_PAGE_SIZE)
+            # SINTRAN sizes the bit file from the declared capacity, not from the device
+            # length (docs/NDFS-ALLOCATION-RULES.md); the bitmap in memory still covers the
+            # whole device, the pages past the on-disk bit file read as free.
+            bitmap_pages = self._bit_file_disk_pages(mb, total_pages)
 
             # Read contiguous bitmap pages
             # A bitmap page that cannot be read leaves its own pages reading
             # as free; it must not cost the file listing, which is what the
             # disk is kept for. The pages that do read are loaded.
-            bitmap_data = bytearray(bitmap_pages * NDFS_PAGE_SIZE)
+            bitmap_data = bytearray(max(bitmap_pages * NDFS_PAGE_SIZE, bitmap_bytes))
             for i in range(bitmap_pages):
                 try:
                     page = self._read_page(mb.bit_file_pointer.block_id + i)
@@ -1017,6 +1029,16 @@ class NdfsFileSystem:
                     continue
                 bitmap_data[i * NDFS_PAGE_SIZE:(i + 1) * NDFS_PAGE_SIZE] = page
             self._bit_file.load_bitmap(bitmap_data[:bitmap_bytes])
+
+    @staticmethod
+    def _bit_file_disk_pages(mb, total_pages: int) -> int:
+        """Pages the bit file occupies on disk: ceil(capacity / 16384), the capacity being the
+        declared directory size when a valid Extended Info Block gives it, else the device."""
+        basis = total_pages
+        if mb.ext_valid and 0 < mb.ext_pages_available <= total_pages:
+            basis = mb.ext_pages_available
+        bitmap_bytes = (math.ceil(basis / 8) + 1) & ~1
+        return math.ceil(bitmap_bytes / NDFS_PAGE_SIZE)
 
     def _structural_pages_for(self, data_pages: int) -> int:
         """Return the number of *structural* (non-data) pages a file's block
@@ -1108,6 +1130,53 @@ class NdfsFileSystem:
                         count += 1
         return count
 
+    def _count_index_blocks_for_object(self, obj: ObjectEntry) -> int:
+        """Index and sub-index blocks that belong to *obj*: none for a contiguous file, one
+        for an Indexed file, the top block plus one per valid slot for a SubIndexed file.
+        SINTRAN charges them to the owner like data pages (docs/NDFS-ALLOCATION-RULES.md
+        section 7)."""
+        if obj.file_pointer is None or obj.file_pointer.block_id == 0:
+            return 0
+        if obj.file_pointer.type == PointerType.Indexed:
+            return 1
+        if obj.file_pointer.type == PointerType.SubIndexed:
+            sub_index_page = self._read_page(obj.file_pointer.block_id)
+            count = 1
+            for si in range(MAX_OBJECT_FILE_POINTERS):
+                if BlockPointer.from_bytes(sub_index_page, si * 4).is_valid():
+                    count += 1
+            return count
+        return 0
+
+    def _count_charged_pages_for_object(self, obj: ObjectEntry) -> int:
+        """Pages SINTRAN charges to the owner for one file: real data pages + index blocks."""
+        return (self._count_real_data_pages_for_object(obj)
+                + self._count_index_blocks_for_object(obj))
+
+    def _count_user_object_pages(self, user_index: int) -> int:
+        """Object data pages that belong to one user: the valid pointers in the user's 8
+        slots of the object index (slot = user*8 .. user*8+7, in the user's group of 64).
+        Each is charged to the user."""
+        mb = self._master_block
+        if mb.object_file_pointer is None or not mb.object_file_pointer.is_valid():
+            return 0
+        group = user_index // USERS_PER_INDEX_BLOCK
+        first = (user_index % USERS_PER_INDEX_BLOCK) * PAGES_PER_OBJECT_BLOCK
+        if mb.object_file_pointer.type == PointerType.Indexed:
+            if group != 0:
+                return 0
+            index_page = self._read_page(mb.object_file_pointer.block_id)
+        elif mb.object_file_pointer.type == PointerType.SubIndexed:
+            sub_page = self._read_page(mb.object_file_pointer.block_id)
+            gp = BlockPointer.from_bytes(sub_page, group * 4)
+            if not gp.is_valid():
+                return 0
+            index_page = self._read_page(gp.block_id)
+        else:
+            return 0
+        return sum(1 for k in range(PAGES_PER_OBJECT_BLOCK)
+                   if BlockPointer.from_bytes(index_page, (first + k) * 4).is_valid())
+
     def _write_data_page_to_index(
         self,
         file_data: Union[bytes, bytearray, memoryview],
@@ -1153,7 +1222,7 @@ class NdfsFileSystem:
             write_uint32_be(index_page, slot_in_index * 4, 0)
         else:
             # Allocate data block
-            data_block_id = self._bit_file.find_first_free_block()
+            data_block_id = self._bit_file.find_free_data_block()
             if data_block_id < 0:
                 raise IOError("No free blocks for data")
             self._bit_file.mark_block_used(data_block_id)
@@ -1195,7 +1264,7 @@ class NdfsFileSystem:
 
         if not use_sub_indexed:
             # Simple indexed allocation (unchanged from before).
-            index_block_id = self._bit_file.find_first_free_block()
+            index_block_id = self._bit_file.find_free_hint()
             if index_block_id < 0:
                 raise IOError("No free blocks for index block")
             self._bit_file.mark_block_used(index_block_id)
@@ -1214,7 +1283,7 @@ class NdfsFileSystem:
                 f"(>{MAX_OBJECT_FILE_POINTERS * MAX_OBJECT_FILE_POINTERS} pages)"
             )
 
-        sub_index_block_id = self._bit_file.find_first_free_block()
+        sub_index_block_id = self._bit_file.find_free_hint()
         if sub_index_block_id < 0:
             raise IOError("No free blocks for sub-index block")
         self._bit_file.mark_block_used(sub_index_block_id)
@@ -1225,7 +1294,7 @@ class NdfsFileSystem:
         structural_pages_used = 1  # count the sub-index block itself
 
         for si in range(num_index_blocks):
-            idx_block_id = self._bit_file.find_first_free_block()
+            idx_block_id = self._bit_file.find_free_hint()
             if idx_block_id < 0:
                 raise IOError("No free blocks for index block")
             self._bit_file.mark_block_used(idx_block_id)
@@ -1561,12 +1630,21 @@ class NdfsFileSystem:
             return
         page_idx = object_index // ENTRIES_PER_PAGE
 
-        def alloc_page() -> int:
-            blk = self._bit_file.find_first_free_block()
+        # The user who owns this directory page (8 pages per user, 64 users per index block).
+        owner_user = ((page_idx // PAGES_PER_INDEX_BLOCK) * USERS_PER_INDEX_BLOCK
+                      + (page_idx % PAGES_PER_INDEX_BLOCK) // PAGES_PER_OBJECT_BLOCK)
+
+        def alloc_page(charge: bool = False) -> int:
+            blk = self._bit_file.find_free_hint()
             if blk < 0:
                 raise IOError("No free blocks for object directory page")
             self._bit_file.mark_block_used(blk)
             self._write_page(blk, bytearray(NDFS_PAGE_SIZE))
+            if charge:
+                # SINTRAN charges an object data page to its owner.
+                owner = self._user_file.get_user(owner_user)
+                if owner is not None:
+                    owner.pages_used += 1
             return blk
 
         if mb.object_file_pointer.type == PointerType.Indexed and page_idx >= MAX_OBJECT_FILE_POINTERS:
@@ -1594,7 +1672,7 @@ class NdfsFileSystem:
             ptr = BlockPointer.from_bytes(index_page, page_idx * 4)
             if ptr.is_valid():
                 return
-            blk = alloc_page()
+            blk = alloc_page(True)
             BlockPointer(blk, PointerType.Contiguous).to_bytes(index_page, page_idx * 4)
             self._write_page(mb.object_file_pointer.block_id, index_page)
         elif mb.object_file_pointer.type == PointerType.SubIndexed:
@@ -1611,7 +1689,7 @@ class NdfsFileSystem:
             ptr = BlockPointer.from_bytes(inner_page, inner_idx * 4)
             if ptr.is_valid():
                 return
-            blk = alloc_page()
+            blk = alloc_page(True)
             BlockPointer(blk, PointerType.Contiguous).to_bytes(inner_page, inner_idx * 4)
             self._write_page(sub_ptr.block_id, inner_page)
 
@@ -1637,7 +1715,7 @@ class NdfsFileSystem:
         if ptr.is_valid():
             return
 
-        blk = self._bit_file.find_first_free_block()
+        blk = self._bit_file.find_free_hint()
         if blk < 0:
             raise IOError("No free blocks for user directory page")
         self._bit_file.mark_block_used(blk)
@@ -1741,7 +1819,7 @@ class NdfsFileSystem:
         # Update user pages used: only the REAL (non-sparse) data pages --
         # never the index/sub-index structural pages, which are filesystem
         # overhead, not user data. See _count_real_data_pages_in_buffer.
-        user.pages_used += self._count_real_data_pages_in_buffer(file_data, holes)
+        user.pages_used += self._count_real_data_pages_in_buffer(file_data, holes) + structural_pages
 
         # Surgical writes: new object's page, owner's user page, bitmap.
         self._write_object_page(entry.object_index)
@@ -1809,7 +1887,12 @@ class NdfsFileSystem:
         # The defining property: one run, no index block. find_free_block_range is the
         # only allocator that can promise consecutive blocks -- the sparse allocator picks
         # each page independently and would scatter them.
-        start_block = self._bit_file.find_free_block_range(pages)
+        if pages == 1:
+            # A file of one page does not take the top-down run rule: SINTRAN gives it the page
+            # the data page allocator (RSPAG) would give (docs/NDFS-ALLOCATION-RULES.md section 3).
+            start_block = self._bit_file.find_free_data_block()
+        else:
+            start_block = self._bit_file.find_free_block_range(pages)
         if start_block < 0:
             raise IOError(f"No contiguous run of {pages} free pages is available on this pack")
 
@@ -1925,7 +2008,7 @@ class NdfsFileSystem:
         # BEFORE freeing its blocks (structural index/sub-index blocks are
         # never part of this count -- they were never charged against the
         # user's quota; see _count_real_data_pages_for_object).
-        old_real_pages = self._count_real_data_pages_for_object(existing)
+        old_real_pages = self._count_charged_pages_for_object(existing)
 
         # Free old blocks (data blocks, plus index/sub-index structural
         # block(s) -- _free_file_blocks already handles both Indexed and
@@ -1960,7 +2043,7 @@ class NdfsFileSystem:
         # Update user pages used: only the REAL (non-sparse) data pages of the
         # new content -- never the index/sub-index structural pages. See
         # _count_real_data_pages_in_buffer.
-        user.pages_used += self._count_real_data_pages_in_buffer(file_data, holes)
+        user.pages_used += self._count_real_data_pages_in_buffer(file_data, holes) + structural_pages
 
         # Surgical writes: the file's object page, owner's user page, bitmap.
         self._write_object_page(existing.object_index)
@@ -2008,7 +2091,8 @@ class NdfsFileSystem:
         mb = self._master_block
         if mb.bit_file_pointer is None or not mb.bit_file_pointer.is_valid():
             return
-        pages = self._bit_file.to_page_buffers()
+        pages = self._bit_file.to_page_buffers(
+            self._bit_file_disk_pages(mb, self._bit_file.total_pages))
         for i in range(len(pages)):
             self._write_page(mb.bit_file_pointer.block_id + i, pages[i])
 

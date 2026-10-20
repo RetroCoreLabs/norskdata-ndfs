@@ -59,6 +59,10 @@ static struct option long_options[] = {
     {"stat",      required_argument, 0, 1011},
     {"chmod",     required_argument, 0, 1012},
     {"pages",     required_argument, 0, 1001},
+    {"bit-file",  required_argument, 0, 1020},
+    {"boot",      required_argument, 0, 1021},
+    {"boot-from", required_argument, 0, 1022},
+    {"boot-file", required_argument, 0, 1023},
     {"name",      required_argument, 0, 1002},
     {"version",   no_argument,       0, 'V'},
     {"ver",       no_argument,       0, 'V'},
@@ -158,6 +162,10 @@ int main(int argc, char **argv)
         case 1012: chmod_spec = optarg; needs_write = 1; break;
 
         case 1001: custom_pages = (uint32_t)atol(optarg); break;
+        case 1020: ctx.create_bit_file = optarg; break;
+        case 1021: ctx.create_boot = optarg; break;
+        case 1022: ctx.create_boot_from = optarg; break;
+        case 1023: ctx.create_boot_file = optarg; break;
         case 1002: dir_name = optarg; break;
 
         default:
@@ -174,6 +182,10 @@ int main(int argc, char **argv)
     /* The image file is ALWAYS the last argument */
     if (create_template) {
         /* For --create, the image path is the last arg */
+        if (strcmp(create_template, "list") == 0) {
+            /* "--create list" only prints the disk type table; no image file is involved */
+            return cmd_create(&ctx, create_template, 0, NULL);
+        }
         if (optind >= argc) {
             fprintf(stderr, "Error: no output image path specified\n");
             return 1;
@@ -399,9 +411,26 @@ static void print_usage(const char *prog)
     printf("  floppy360       360 KB floppy (154 pages)\n");
     printf("  floppy12        1.2 MB floppy (512 pages)\n");
     printf("  smd75           75 MB SMD disk\n");
-    printf("  winchester74    74 MB Winchester disk\n");
+    printf("  winchester74    74 MB Winchester disk (36864 pages)\n");
+    printf("  scsi126         126 MB SCSI disk (64656 pages)\n");
     printf("  custom          Custom size (use --pages N)\n");
+    printf("  DISC-xx ...     A SINTRAN disk type by name (DISC-14MB, DISC-21MB, DISC-23MB, DISC-28MB,\n");
+    printf("                  DISC-45MB, DISC-74MB: Winchester; DISC-38MB, DISC-70MB, DISC-75MB,\n");
+    printf("                  DISC-288MB-R/F/E/N, DISC-450MB-F/N and more: SMD). The image has the\n");
+    printf("                  directory size SINTRAN gives the type, and the full disk layout length\n");
+    printf("                  where that is known. Run --create list for every name with its size in\n");
+    printf("                  pages and MB, controller family, drive model and test status.\n");
+    printf("  -R -F -E -N     End of a SMD name: formats of one size (R removable, F fixed, E EMD drive,\n");
+    printf("                  N NEC drive) with different heads/sectors, so different image lengths.\n");
+    printf("  SCSI            Only scsi126 (64656 pages): the last page is not decoded, so no other\n");
+    printf("                  SCSI size can be made. Floppies: floppy360 and floppy12 only (or custom).\n");
     printf("\n  --pages N       Page count for custom template\n");
+    printf("  --bit-file A    SINTRAN's bit file address prompt: 0 = default (9*floor(floor(size/2)/9)),\n");
+    printf("                  -1 = end of disc, anything else = an OCTAL page address\n");
+    printf("  --boot WHAT     Boot area in page 0: auto (default), none, smd, winchester, scsi,\n");
+    printf("                  floppy360, floppy616. Not verified: no created image has been booted.\n");
+    printf("  --boot-from IMG Copy bytes 0-1999 of page 0 of the image IMG as the boot area\n");
+    printf("  --boot-file F   Use the file F (at most 2000 bytes) as the boot area\n");
     printf("  --name NAME     Directory/volume name for new image\n");
     printf("\nExamples:\n");
     printf("  %s -t disk.ndfs\n", prog);

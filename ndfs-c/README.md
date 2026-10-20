@@ -256,9 +256,22 @@ All free functions are no-ops when passed NULL.
 | Floppy 360KB | `NDFS_TMPL_FLOPPY_360KB` | 154 | 315 KB |
 | Floppy 1.2MB | `NDFS_TMPL_FLOPPY_12MB` | 616 | 1.2 MB |
 | SMD 75MB | `NDFS_TMPL_SMD_75MB` | 36,945 | 75 MB |
-| Winchester 74MB | `NDFS_TMPL_WINCHESTER_74MB` | 36,396 | 74 MB |
+| Winchester 74MB | `NDFS_TMPL_WINCHESTER_74MB` | 36,396 declared, 36,864 in the file | 72 MB |
+| SCSI 126MB | `NDFS_TMPL_SCSI_126MB` | 61,036 declared, 64,656 in the file | 126 MB |
 | Custom | `NDFS_TMPL_CUSTOM` | User-defined | Varies |
 
+SINTRAN disk type names (`DISC-14MB` ... `DISC-450MB-F`, 40 names with controller family, drive model and a "created with real SINTRAN" flag) are available through
+`ndfs_disk_type_count()`, `ndfs_disk_type_get()`, `ndfs_disk_type_by_name()` and `ndfs_disk_type_find()`; pass the size to `NDFS_TMPL_CUSTOM`.
+The sizes come from SINTRAN's device-name table (see `docs/DISK-GEOMETRY-AND-BOOT-FINDINGS.md`).
+
+### What a created image contains (measured with the real SINTRAN M)
+
+`ndfs_create_image` follows what SINTRAN's `@CREATE-DIRECTORY`, the first `@CREATE-USER` and the first `@CREATE-FILE` write (see `docs/CREATE-DIRECTORY-ORACLE.md`):
+the label and the Extended Info Block (hard disks only; floppies have none), the bit file at the address SINTRAN would choose (`bit_file_answer`: 0 = default,
+-1 = end of disc, n = a page address), the pages above the declared capacity marked used up to the next multiple of 256, the user file and object file pages found
+by SINTRAN's free-page search from the bit file, and the Unreserved Pages count by the measured formula. Page 0 bytes 0 to 1999 get a real boot area
+(`boot_choice`, or `boot_data` for your own); the SCSI template also gets the real last page SINTRAN needs.
+Not verified: nobody has booted an image made this way, and the boot areas come from different SINTRAN generations.
 ## Test Coverage
 
 137 tests covering:

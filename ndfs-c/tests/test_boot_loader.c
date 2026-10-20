@@ -20,6 +20,7 @@ static ndfs_filesystem_t *create_empty_image(void)
 
     ndfs_image_options_init(&opts);
     opts.template_type = NDFS_TMPL_FLOPPY_360KB;
+    opts.boot_choice = NDFS_BOOTCODE_NONE;   /* the test supplies its own boot area */
     strcpy(opts.directory_name, "BOOTTEST");
 
     if (ndfs_create_image(&fs, &opts) != NDFS_OK) return NULL;
@@ -74,6 +75,7 @@ static int test_detect_bpun_format(void)
 
     ndfs_image_options_init(&opts);
     opts.template_type = NDFS_TMPL_FLOPPY_360KB;
+    opts.boot_choice = NDFS_BOOTCODE_NONE;   /* the test supplies its own boot area */
     strcpy(opts.directory_name, "BPUNTEST");
     TEST_ASSERT_OK(ndfs_create_image(&fs, &opts));
 
@@ -146,6 +148,7 @@ static int test_detect_flomon_format(void)
 
     ndfs_image_options_init(&opts);
     opts.template_type = NDFS_TMPL_FLOPPY_360KB;
+    opts.boot_choice = NDFS_BOOTCODE_NONE;   /* the test supplies its own boot area */
     strcpy(opts.directory_name, "FLOTEST");
     TEST_ASSERT_OK(ndfs_create_image(&fs, &opts));
 
@@ -212,6 +215,7 @@ static int test_flomon_zero_words(void)
 
     ndfs_image_options_init(&opts);
     opts.template_type = NDFS_TMPL_FLOPPY_360KB;
+    opts.boot_choice = NDFS_BOOTCODE_NONE;   /* the test supplies its own boot area */
     strcpy(opts.directory_name, "FLO0WD");
     TEST_ASSERT_OK(ndfs_create_image(&fs, &opts));
     TEST_ASSERT_OK(ndfs_to_buffer(fs, &exported, &exported_size));
@@ -273,6 +277,7 @@ static ndfs_filesystem_t *create_image_with_page0(const uint8_t *page0_prefix, s
 
     ndfs_image_options_init(&opts);
     opts.template_type = NDFS_TMPL_FLOPPY_360KB;
+    opts.boot_choice = NDFS_BOOTCODE_NONE;   /* the test supplies its own boot area */
     strcpy(opts.directory_name, "RAWTEST");
     if (ndfs_create_image(&fs, &opts) != NDFS_OK) return NULL;
 

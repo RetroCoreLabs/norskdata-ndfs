@@ -117,7 +117,7 @@ class TestAutoQuota:
 class TestDiskFull:
     def test_raises_on_disk_full(self):
         # Create a tiny filesystem and fill it up
-        ndfs = _make_fs(25)
+        ndfs = _make_fs(50)
         free = ndfs.get_free_pages()
         # Write NON-ZERO data requiring more pages than available
         # (zero pages would be sparse and not allocate blocks)
@@ -174,10 +174,10 @@ class TestSparseQuotaAccounting:
     """Regression tests for user.pages_used quota tracking.
 
     Previously pages_used was charged using the file's LOGICAL page count
-    (which wrongly counts sparse holes as consuming real disk space) plus
-    a flat structural-block estimate (index/sub-index blocks -- filesystem
-    overhead, never real user data). Quota must track only the real,
-    non-sparse data pages actually allocated on disk.
+    (which wrongly counts sparse holes as consuming real disk space).
+    Quota tracks the real, non-sparse data pages actually allocated on disk
+    plus the file's index and sub-index blocks, which real SINTRAN also
+    charges to the owner (measured, docs/NDFS-ALLOCATION-RULES.md section 7).
     """
 
     def test_fully_sparse_charges_zero_pages_used(self):
@@ -188,9 +188,9 @@ class TestSparseQuotaAccounting:
         ndfs.write_file("SYSTEM/ZERO:DAT", data, holes=range(5))
 
         used_after = ndfs.get_user(0).pages_used
-        assert used_after == used_before, (
-            "a fully-sparse file allocates no real data blocks and no "
-            "index block should be charged to quota"
+        assert used_after - used_before == 1, (
+            "a fully-sparse file allocates no real data blocks; only its "
+            "index block is charged to quota"
         )
 
     def test_mixed_sparse_charges_only_real_pages(self):
@@ -204,9 +204,9 @@ class TestSparseQuotaAccounting:
         ndfs.write_file("SYSTEM/MIXED:DAT", data, holes=range(3, 10))
 
         used_after = ndfs.get_user(0).pages_used
-        assert used_after - used_before == 3, (
-            "only the 3 real (non-zero) pages should count toward quota -- "
-            "not the 7 holes, and not the index block"
+        assert used_after - used_before == 3 + 1, (
+            "the 3 real (non-zero) pages and the index block count toward "
+            "quota -- not the 7 holes"
         )
 
     def test_fully_real_charges_exact_page_count_no_index_overhead(self):
@@ -219,9 +219,8 @@ class TestSparseQuotaAccounting:
         ndfs.write_file("SYSTEM/FULL:DAT", data)
 
         used_after = ndfs.get_user(0).pages_used
-        assert used_after - used_before == 6, (
-            "exactly the 6 real data pages -- the index block must not "
-            "add +1 to quota"
+        assert used_after - used_before == 6 + 1, (
+            "the 6 real data pages plus the index block"
         )
 
     def test_delete_refunds_exactly_what_create_charged(self):
@@ -249,14 +248,14 @@ class TestSparseQuotaAccounting:
             small[i] = 0xAA
         ndfs.write_file("SYSTEM/GROW:DAT", small)
         used_after_first_write = ndfs.get_user(0).pages_used
-        assert used_after_first_write - used_baseline == 2
+        assert used_after_first_write - used_baseline == 2 + 1
 
         big = bytearray(NDFS_PAGE_SIZE * 8)
         for i in range(len(big)):
             big[i] = 0xBB
         ndfs.write_file("SYSTEM/GROW:DAT", big)
         used_after_overwrite = ndfs.get_user(0).pages_used
-        assert used_after_overwrite - used_baseline == 8, (
+        assert used_after_overwrite - used_baseline == 8 + 1, (
             "overwriting with a larger file must charge the NEW real page "
             "count, replacing the old"
         )
@@ -266,7 +265,7 @@ class TestSparseQuotaAccounting:
             tiny[i] = 0xCC
         ndfs.write_file("SYSTEM/GROW:DAT", tiny)
         used_after_shrink = ndfs.get_user(0).pages_used
-        assert used_after_shrink - used_baseline == 1, (
+        assert used_after_shrink - used_baseline == 1 + 1, (
             "overwriting with a smaller file must refund down to the new "
             "(smaller) real page count"
         )

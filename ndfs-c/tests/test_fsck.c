@@ -618,7 +618,7 @@ static int test_fsck_detects_quota_mismatch(void)
     entry_off = (size_t)user_data_block * NDFS_PAGE_SIZE
               + (size_t)(system_index % 32) * 64;
     pages_used_off = entry_off + 32; /* see user_entry.c: pages_used is offset+32 */
-    TEST_ASSERT_EQUAL(0, ndfs_read_u32be(buf, pages_used_off)); /* premise: SYSTEM owns no files yet */
+    TEST_ASSERT_EQUAL(1, ndfs_read_u32be(buf, pages_used_off)); /* premise: SYSTEM owns no files; its object page is charged */
     ndfs_write_u32be(buf, pages_used_off, 9999u);
 
     TEST_ASSERT_OK(ndfs_open_buffer_copy(buf, buf_size, true, &fs_dirty));
@@ -699,6 +699,55 @@ static int test_fsck_mixed_workload_is_clean(void)
     return 0;
 }
 
+/* Pages from the declared capacity (Extended Info Block, Pages Available)
+ * to the end of the device are the drive's spare area. Real images exist
+ * (BIGDISK0-M-103.IMG, WD0-SINTRAN-M.IMG) with every bit in that area set
+ * and no file owning them. fsck must NOT call those orphans: it counts them
+ * and prints one INFO line. The SMD_75MB template declares 36945 pages in a
+ * 38400-page device, so pages 36945..38399 are that spare area; the creator itself
+ * marks 36945..37119 used (SINTRAN does, up to the next multiple of 256). A used bit
+ * BELOW the capacity with no owner must still be reported as an orphan. */
+static int test_fsck_spare_area_marked_used_is_info_not_orphan(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_SMD_75MB, "FSCKSPARE");
+    ndfs_filesystem_t *fs_dirty = NULL;
+    const ndfs_master_block_t *mb = NULL;
+    uint8_t *buf = NULL;
+    size_t buf_size = 0;
+    char *report = NULL;
+    int fsck_errors = -1;
+    size_t byte_off;
+    uint8_t mask;
+    size_t abs_off;
+    uint32_t spare_pages[2] = { 37120, 38399 };   /* the creator already marks 36945..37119, like SINTRAN */
+    int i;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_get_master_block(fs, &mb));
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &buf, &buf_size));
+
+    for (i = 0; i < 2; i++) {
+        raw_bitmap_bit_offset(spare_pages[i], &byte_off, &mask);
+        abs_off = (size_t)mb->bit_file_ptr.block_id * NDFS_PAGE_SIZE + byte_off;
+        TEST_ASSERT((buf[abs_off] & mask) == 0); /* premise: spare page is free */
+        buf[abs_off] |= mask;
+    }
+
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(buf, buf_size, true, &fs_dirty));
+    free(buf);
+
+    TEST_ASSERT_OK(ndfs_fsck(fs_dirty, &report, &fsck_errors));
+    TEST_ASSERT_NOT_NULL(report);
+    TEST_ASSERT_EQUAL(0, fsck_errors);
+    TEST_ASSERT(strstr(report, "OK: No orphaned blocks") != NULL);
+    TEST_ASSERT(strstr(report, "INFO: 177 pages at or above the declared capacity (36945)") != NULL); /* 175 marked by the creator + 2 */
+
+    free(report);
+    ndfs_close(fs_dirty);
+    ndfs_close(fs);
+    return 0;
+}
+
 void run_fsck_tests(void)
 {
     TEST_SUITE_BEGIN("fsck Reference-Walk Tests");
@@ -715,4 +764,5 @@ void run_fsck_tests(void)
     RUN_TEST(test_fsck_detects_invalid_master_block_pointer);
     RUN_TEST(test_fsck_detects_quota_mismatch);
     RUN_TEST(test_fsck_mixed_workload_is_clean);
+    RUN_TEST(test_fsck_spare_area_marked_used_is_info_not_orphan);
 }

@@ -518,6 +518,22 @@ static void assign_file_numbers(struct ndfs_filesystem *fs)
 
 /* ââ Structure loading ââââââââââââââââââââââââââââââââââ */
 
+/* Number of pages the bit file occupies on disk. SINTRAN sizes it from the directory's
+ * declared capacity (Extended Info Block, pages available), not from the length of the
+ * device: measured on large SMD formats whose device is longer than the capacity (for
+ * example 153576 device pages, 140391 capacity: 9 bit file pages, not 10). Without a valid
+ * capacity (floppies) the device length is used. */
+static uint32_t bit_file_disk_pages(const ndfs_master_block_t *mb, uint32_t total_pages)
+{
+    uint32_t basis = total_pages;
+    uint32_t bytes;
+    if (mb->ext_valid && mb->ext_pages_available > 0 &&
+        mb->ext_pages_available <= total_pages)
+        basis = mb->ext_pages_available;
+    bytes = (((basis + 7) / 8) + 1) & ~1u;
+    return (bytes + NDFS_PAGE_SIZE - 1) / NDFS_PAGE_SIZE;
+}
+
 static ndfs_error_t load_structures(struct ndfs_filesystem *fs)
 {
     const ndfs_master_block_t *mb = &fs->master_block;
@@ -688,11 +704,12 @@ static ndfs_error_t load_structures(struct ndfs_filesystem *fs)
          * the last word in half on any device whose page count is not a multiple of 16
          * and loses the pages living in its high byte. See bf_byte_index(). */
         uint32_t bitmap_bytes = (((total_pages + 7) / 8) + 1) & ~1u;
-        uint32_t bitmap_pages = (bitmap_bytes + NDFS_PAGE_SIZE - 1) / NDFS_PAGE_SIZE;
+        uint32_t bitmap_pages = bit_file_disk_pages(mb, total_pages);
         ndfs_error_t err;
 
         err = ndfs_bf_init(&fs->bit_file, total_pages);
         if (err != NDFS_OK) return err;
+        fs->bit_file.bit_address = mb->bit_file_ptr.block_id;
 
         /* Bound the ALLOCATION window by the directory's declared capacity
          * (ext_pages_available, words 1756B-1757B) when the extended-info block is valid.
@@ -715,7 +732,12 @@ static ndfs_error_t load_structures(struct ndfs_filesystem *fs)
 
         /* Read contiguous bitmap pages */
         {
-            uint8_t *tmp = (uint8_t *)malloc((size_t)bitmap_pages * NDFS_PAGE_SIZE);
+            /* The in-memory bitmap covers the whole device; pages past the on-disk bit file
+             * stay zero (free). */
+            size_t tmp_len = (size_t)bitmap_pages * NDFS_PAGE_SIZE;
+            uint8_t *tmp;
+            if (tmp_len < bitmap_bytes) tmp_len = bitmap_bytes;
+            tmp = (uint8_t *)calloc(tmp_len, 1);
             if (!tmp) return NDFS_ERR_ALLOC;
 
             for (i = 0; i < bitmap_pages; i++) {
@@ -979,6 +1001,67 @@ static uint32_t count_real_data_pages_in_object(const struct ndfs_filesystem *fs
     return count;
 }
 
+/* Index and sub-index blocks that belong to `obj` (the structure around its data pages).
+ * Contiguous files have none; an Indexed file has one; a SubIndexed file has the top block
+ * plus one block for each valid sub-index slot. SINTRAN charges these blocks to the owner's
+ * quota like data pages (measured, docs/NDFS-ALLOCATION-RULES.md section 7). */
+static uint32_t count_index_blocks_in_object(const struct ndfs_filesystem *fs,
+                                             const ndfs_object_entry_t *obj)
+{
+    uint32_t count = 0;
+    size_t si;
+
+    if (!obj->file_pointer.block_id) return 0;
+    if (obj->file_pointer.type == NDFS_PTR_INDEXED) return 1;
+    if (obj->file_pointer.type == NDFS_PTR_SUBINDEXED) {
+        const uint8_t *sub_page = read_page(fs, obj->file_pointer.block_id);
+        if (!sub_page) return 1;
+        count = 1;
+        for (si = 0; si < NDFS_MAX_OBJECT_FILE_PTRS; si++) {
+            ndfs_block_pointer_t idx_ptr = ndfs_bp_from_bytes(sub_page, si * 4);
+            if (ndfs_bp_is_valid(&idx_ptr)) count++;
+        }
+    }
+    return count;
+}
+
+/* Pages SINTRAN charges to the owner for one file: real data pages plus index blocks. */
+static uint32_t count_charged_pages_in_object(const struct ndfs_filesystem *fs,
+                                              const ndfs_object_entry_t *obj)
+{
+    return count_real_data_pages_in_object(fs, obj) + count_index_blocks_in_object(fs, obj);
+}
+
+/* Object data pages that belong to one user: the pointers in the user's 8 slots of the object
+ * index (slot = user*8 .. user*8+7, in the user's group of 64). Each is charged to the user. */
+static uint32_t count_user_object_pages(const struct ndfs_filesystem *fs, uint8_t user_index)
+{
+    const ndfs_master_block_t *mb = &fs->master_block;
+    uint32_t group = (uint32_t)user_index / NDFS_USERS_PER_INDEX_BLOCK;
+    uint32_t first = ((uint32_t)user_index % NDFS_USERS_PER_INDEX_BLOCK) * NDFS_PAGES_PER_OBJECT_BLOCK;
+    uint32_t count = 0, k;
+    const uint8_t *index_page = NULL;
+
+    if (!ndfs_bp_is_valid(&mb->object_file_ptr)) return 0;
+    if (mb->object_file_ptr.type == NDFS_PTR_INDEXED) {
+        if (group != 0) return 0;
+        index_page = read_page(fs, mb->object_file_ptr.block_id);
+    } else if (mb->object_file_ptr.type == NDFS_PTR_SUBINDEXED) {
+        const uint8_t *sub_page = read_page(fs, mb->object_file_ptr.block_id);
+        ndfs_block_pointer_t gp;
+        if (!sub_page) return 0;
+        gp = ndfs_bp_from_bytes(sub_page, group * 4);
+        if (!ndfs_bp_is_valid(&gp)) return 0;
+        index_page = read_page(fs, gp.block_id);
+    }
+    if (!index_page) return 0;
+    for (k = 0; k < NDFS_PAGES_PER_OBJECT_BLOCK; k++) {
+        ndfs_block_pointer_t p = ndfs_bp_from_bytes(index_page, (first + k) * 4);
+        if (ndfs_bp_is_valid(&p)) count++;
+    }
+    return count;
+}
+
 /* ── File creation/update ────────────────────────────────────────── */
 
 /* Physical object-file position of a slot inside one of a user's object blocks.
@@ -1156,6 +1239,10 @@ static uint32_t ensure_object_dir_page(struct ndfs_filesystem *fs,
     uint32_t blk;
     uint8_t *dp;
     ndfs_block_pointer_t newp;
+    /* The user who owns this directory page (8 pages per user, 64 users per index block). */
+    uint32_t owner_page = object_index / NDFS_ENTRIES_PER_PAGE;
+    uint32_t owner_user = (owner_page / NDFS_PAGES_PER_INDEX_BLOCK) * NDFS_USERS_PER_INDEX_BLOCK
+                        + (owner_page % NDFS_PAGES_PER_INDEX_BLOCK) / NDFS_PAGES_PER_OBJECT_BLOCK;
 
     if (!ndfs_bp_is_valid(&mb->object_file_ptr)) return 0;
 
@@ -1176,7 +1263,7 @@ static uint32_t ensure_object_dir_page(struct ndfs_filesystem *fs,
         uint8_t *sub_page;
         ndfs_block_pointer_t group0;
 
-        if (ndfs_bf_find_free(&fs->bit_file, &sub_blk) != NDFS_OK) return 0;
+        if (ndfs_bf_find_free_hint(&fs->bit_file, &sub_blk) != NDFS_OK) return 0;
         ndfs_bf_mark_used(&fs->bit_file, sub_blk);
         sub_page = write_page_ptr(fs, sub_blk);
         if (!sub_page) return 0;
@@ -1215,7 +1302,7 @@ static uint32_t ensure_object_dir_page(struct ndfs_filesystem *fs,
         sub_ptr = ndfs_bp_from_bytes(sub_page, sub_idx * 4);
         if (!ndfs_bp_is_valid(&sub_ptr)) {
             /* Allocate a new inner index block and link it in the sub-index. */
-            if (ndfs_bf_find_free(&fs->bit_file, &blk) != NDFS_OK) return 0;
+            if (ndfs_bf_find_free_hint(&fs->bit_file, &blk) != NDFS_OK) return 0;
             ndfs_bf_mark_used(&fs->bit_file, blk);
             dp = write_page_ptr(fs, blk);
             if (!dp) return 0;
@@ -1235,9 +1322,13 @@ static uint32_t ensure_object_dir_page(struct ndfs_filesystem *fs,
         return 0;
     }
 
-    /* Allocate + link a new directory data page. */
-    if (ndfs_bf_find_free(&fs->bit_file, &blk) != NDFS_OK) return 0;
+    /* Allocate + link a new directory data page. SINTRAN charges it to the owner. */
+    if (ndfs_bf_find_free_hint(&fs->bit_file, &blk) != NDFS_OK) return 0;
     ndfs_bf_mark_used(&fs->bit_file, blk);
+    {
+        int owner_slot = find_user_by_index(fs, (uint8_t)owner_user);
+        if (owner_slot >= 0) fs->users[owner_slot].pages_used++;
+    }
     dp = write_page_ptr(fs, blk);
     if (!dp) return 0;
     memset(dp, 0, NDFS_PAGE_SIZE);
@@ -1287,7 +1378,7 @@ static uint32_t ensure_user_dir_page(struct ndfs_filesystem *fs, uint32_t user_i
 
     /* Page not yet allocated -- grab a free block from the bitmap, zero it,
      * and link it into the UserFile index block at this page's slot. */
-    if (ndfs_bf_find_free(&fs->bit_file, &blk) != NDFS_OK) return 0;
+    if (ndfs_bf_find_free_hint(&fs->bit_file, &blk) != NDFS_OK) return 0;
     ndfs_bf_mark_used(&fs->bit_file, blk);
     dp = write_page_ptr(fs, blk);
     if (!dp) return 0;
@@ -1369,7 +1460,7 @@ static ndfs_error_t write_data_page_to_index(struct ndfs_filesystem *fs,
         ndfs_block_pointer_t data_ptr;
         ndfs_error_t err;
 
-        err = ndfs_bf_find_free(&fs->bit_file, &data_block_id);
+        err = ndfs_bf_find_free_block(&fs->bit_file, &data_block_id);
         if (err != NDFS_OK) return NDFS_ERR_NO_SPACE;
         ndfs_bf_mark_used(&fs->bit_file, data_block_id);
 
@@ -1456,7 +1547,7 @@ static ndfs_error_t allocate_and_write_data(struct ndfs_filesystem *fs,
         uint32_t index_block_id;
         uint8_t *index_page_buf;
 
-        err = ndfs_bf_find_free(&fs->bit_file, &index_block_id);
+        err = ndfs_bf_find_free_hint(&fs->bit_file, &index_block_id);
         if (err != NDFS_OK) return NDFS_ERR_NO_SPACE;
         ndfs_bf_mark_used(&fs->bit_file, index_block_id);
 
@@ -1492,7 +1583,7 @@ static ndfs_error_t allocate_and_write_data(struct ndfs_filesystem *fs,
         uint32_t struct_pages = 1; /* the sub-index block itself */
         uint32_t si;
 
-        err = ndfs_bf_find_free(&fs->bit_file, &sub_index_block_id);
+        err = ndfs_bf_find_free_hint(&fs->bit_file, &sub_index_block_id);
         if (err != NDFS_OK) return NDFS_ERR_NO_SPACE;
         ndfs_bf_mark_used(&fs->bit_file, sub_index_block_id);
 
@@ -1516,7 +1607,7 @@ static ndfs_error_t allocate_and_write_data(struct ndfs_filesystem *fs,
 
             if (end_page > data_pages) end_page = data_pages;
 
-            err = ndfs_bf_find_free(&fs->bit_file, &idx_block_id);
+            err = ndfs_bf_find_free_hint(&fs->bit_file, &idx_block_id);
             if (err != NDFS_OK) { cache_unpin(fs, sub_index_block_id); return NDFS_ERR_NO_SPACE; }
             ndfs_bf_mark_used(&fs->bit_file, idx_block_id);
             struct_pages++;
@@ -1676,8 +1767,7 @@ static ndfs_error_t create_new_file(struct ndfs_filesystem *fs,
      * needed as an out-param of allocate_and_write_data() above, but is no
      * longer part of the quota charge. */
     fs->users[user_slot].pages_used +=
-        count_real_data_pages_in_buffer(file_data, file_size, data_pages, holes);
-    (void)struct_pages;
+        count_real_data_pages_in_buffer(file_data, file_size, data_pages, holes) + struct_pages;
 
     /* Surgical writes: the new object's directory page, the owner's user page,
      * and the allocation bitmap. Index/data blocks were written above. */
@@ -1767,7 +1857,7 @@ static ndfs_error_t update_existing_file(struct ndfs_filesystem *fs,
      * index/sub-index structural blocks that are filesystem overhead, not
      * user data -- the exact leak class already found and fixed in the C#
      * port's AllocateFileBlocksSparse. */
-    uint32_t old_real_pages = count_real_data_pages_in_object(fs, existing);
+    uint32_t old_real_pages = count_charged_pages_in_object(fs, existing);
     uint32_t data_pages;
     uint32_t top_block_id;
     ndfs_pointer_type_t pointer_type;
@@ -1814,8 +1904,7 @@ static ndfs_error_t update_existing_file(struct ndfs_filesystem *fs,
      * but is no longer part of the quota charge -- see
      * count_real_data_pages_in_buffer(). */
     fs->users[user_slot].pages_used +=
-        count_real_data_pages_in_buffer(file_data, file_size, data_pages, holes);
-    (void)struct_pages;
+        count_real_data_pages_in_buffer(file_data, file_size, data_pages, holes) + struct_pages;
 
     /* Surgical writes: the file's object page, the owner's user page, and the
      * allocation bitmap (old blocks freed + new blocks allocated above). */
@@ -1873,7 +1962,7 @@ static ndfs_error_t write_bit_file(struct ndfs_filesystem *fs)
     if (!ndfs_bp_is_valid(&mb->bit_file_ptr)) return NDFS_OK;
 
     ndfs_bf_get_data(&fs->bit_file, &bm_data, &bm_len);
-    bm_pages = (uint32_t)((bm_len + NDFS_PAGE_SIZE - 1) / NDFS_PAGE_SIZE);
+    bm_pages = bit_file_disk_pages(mb, (uint32_t)(fs->size / NDFS_PAGE_SIZE));
 
     for (i = 0; i < bm_pages; i++) {
         uint8_t *page = write_page_ptr(fs, mb->bit_file_ptr.block_id + i);
@@ -2473,11 +2562,24 @@ static ndfs_error_t write_file_impl(ndfs_filesystem_t *fs,
         uint32_t new_real_pages =
             count_real_data_pages_in_buffer(file_data, file_size, data_pages, holes);
         uint32_t existing_real_pages = 0;
+        /* Index and sub-index blocks are charged like data pages (SINTRAN, measured), so the
+         * reservation must cover them: one block, or a top block plus one per 512 pages. */
+        uint32_t new_struct_pages = data_pages <= NDFS_MAX_OBJECT_FILE_PTRS
+            ? 1u : 1u + (data_pages + NDFS_MAX_OBJECT_FILE_PTRS - 1) / NDFS_MAX_OBJECT_FILE_PTRS;
+        uint32_t existing_struct_pages = 0;
 
         if (existing_idx >= 0) {
             existing_real_pages =
                 count_real_data_pages_in_object(fs, &fs->objects[existing_idx]);
+            existing_struct_pages =
+                count_index_blocks_in_object(fs, &fs->objects[existing_idx]);
         }
+
+        new_real_pages += new_struct_pages;
+        existing_real_pages += existing_struct_pages;
+        /* The first file of a user also needs the user's first object data page. */
+        if (existing_idx < 0 && count_user_object_pages(fs, user->user_index) == 0)
+            new_real_pages++;
 
         additional_needed = new_real_pages > existing_real_pages
             ? new_real_pages - existing_real_pages : 0;
@@ -2578,7 +2680,13 @@ ndfs_error_t ndfs_create_contiguous_file(ndfs_filesystem_t *fs,
     /* The defining property: one run, no index block. ndfs_bf_find_free_range()
      * is the only allocator that can promise consecutive blocks -- the sparse
      * allocator picks each page independently and would scatter them. */
-    err = ndfs_bf_find_free_range(&fs->bit_file, pages, &start_block);
+    if (pages == 1) {
+        /* A file of one page does not take the top-down run rule: SINTRAN gives it the
+         * page the data page allocator (RSPAG) would give. docs/NDFS-ALLOCATION-RULES.md section 3. */
+        err = ndfs_bf_find_free_block(&fs->bit_file, &start_block);
+    } else {
+        err = ndfs_bf_find_free_range(&fs->bit_file, pages, &start_block);
+    }
     if (err != NDFS_OK) return NDFS_ERR_NO_SPACE;
 
     err = ndfs_bf_allocate(&fs->bit_file, start_block, pages);
@@ -2670,7 +2778,7 @@ ndfs_error_t ndfs_delete_file(ndfs_filesystem_t *fs, const char *path)
      * quota in the first place, and index/sub-index structural blocks are
      * filesystem overhead, not user data, so they are never refunded either
      * (mirrors create_new_file/update_existing_file). */
-    real_pages = count_real_data_pages_in_object(fs, obj);
+    real_pages = count_charged_pages_in_object(fs, obj);
 
     /* Free blocks */
     if (obj->file_pointer.block_id > 0) {
@@ -3690,8 +3798,7 @@ ndfs_error_t ndfs_fsck(const ndfs_filesystem_t *fs, char **out_report,
     /* Bit file: the bitmap spans several CONTIGUOUS pages, not just block_id.
      * Recompute its page span exactly as load_structures does. */
     if (ndfs_bp_is_valid(&fs->master_block.bit_file_ptr)) {
-        uint32_t bitmap_bytes = (((total_pages + 7) / 8) + 1) & ~1u;
-        uint32_t bitmap_pages = (bitmap_bytes + NDFS_PAGE_SIZE - 1) / NDFS_PAGE_SIZE;
+        uint32_t bitmap_pages = bit_file_disk_pages(&fs->master_block, total_pages);
         uint32_t bb = fs->master_block.bit_file_ptr.block_id;
         uint32_t p;
         for (p = 0; p < bitmap_pages; p++)
@@ -3776,13 +3883,38 @@ ndfs_error_t ndfs_fsck(const ndfs_filesystem_t *fs, char **out_report,
         uint32_t orphaned = 0;
         uint32_t referenced_free = 0;
         uint32_t multiply_referenced = 0;
+        uint32_t spare_marked_used = 0;
 
+        /* WHY pages at or above the declared capacity are not orphans.
+         *
+         * The "declared capacity" is the 32-bit Pages Available value in the
+         * Extended Info Block on page 0 (offset 0x07DC, SINTRAN words
+         * 1756B-1757B). It is read on mount into bit_file.alloc_ceiling. The
+         * bitmap covers the whole PHYSICAL device (e.g. 38400 pages), but the
+         * directory only hands out pages below the declared capacity (e.g.
+         * 36945). The pages from capacity to the end of the device are the
+         * drive's spare area for bad sectors. No file can legitimately own
+         * them, so "marked used, no owner" is meaningless there.
+         *
+         * Measured on real images (read only): BIGDISK0-K-100.IMG leaves every
+         * bit in that area clear, but BIGDISK0-M-103.IMG (1455 pages) and
+         * WD0-SINTRAN-M.IMG (2004 pages) have EVERY bit in that area set. The
+         * old test reported all of them as orphans. Who sets those bits is
+         * NOT known; we therefore count them separately and print an INFO
+         * line instead of a warning, so the difference stays visible.
+         * See docs/FSCK-ANALYSIS-AND-PLAN.md, Update 3.
+         *
+         * alloc_ceiling equals total_pages when no valid Extended Info Block
+         * exists (floppies), which makes this area empty. */
         for (block = 0; block < total_pages; block++) {
             bool in_bitmap = ndfs_bf_is_used(&fs->bit_file, block);
             bool referenced = (refcount[block] > 0);
 
             if (in_bitmap && !referenced && block >= NDFS_FIRST_ALLOC_BLOCK) {
-                orphaned++;
+                if (block >= fs->bit_file.alloc_ceiling)
+                    spare_marked_used++;
+                else
+                    orphaned++;
             }
             if (!in_bitmap && referenced) {
                 referenced_free++;
@@ -3798,6 +3930,11 @@ ndfs_error_t ndfs_fsck(const ndfs_filesystem_t *fs, char **out_report,
             warnings++;
         } else {
             APPEND("  OK: No orphaned blocks\n");
+        }
+
+        if (spare_marked_used > 0) {
+            APPEND("  INFO: %u pages at or above the declared capacity (%u) are marked used in the bitmap (spare area, not orphans)\n",
+                   spare_marked_used, fs->bit_file.alloc_ceiling);
         }
 
         if (referenced_free > 0) {
@@ -3834,9 +3971,10 @@ ndfs_error_t ndfs_fsck(const ndfs_filesystem_t *fs, char **out_report,
         uint32_t actual_pages = 0;
         for (j = 0; j < fs->object_count; j++) {
             if (fs->objects[j].user_index == user->user_index) {
-                actual_pages += count_real_data_pages_in_object(fs, &fs->objects[j]);
+                actual_pages += count_charged_pages_in_object(fs, &fs->objects[j]);
             }
         }
+        actual_pages += count_user_object_pages(fs, user->user_index);
 
         if (actual_pages != user->pages_used) {
             APPEND("  WARNING: User '%s' pages_used=%u but actual file pages=%u\n",

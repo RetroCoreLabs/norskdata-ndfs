@@ -1537,10 +1537,16 @@ static int test_unreserved_pages_persist_does_not_touch_extended_info(void)
  * scenario: create_new_file/update_existing_file/ndfs_delete_file now use
  * count_real_data_pages_in_buffer()/count_real_data_pages_in_object()
  * (src/filesystem.c) to charge only real (non-sparse), non-structural
- * pages. */
+ * pages.
+ *
+ * UPDATED 2026: real SINTRAN also charges the index and sub-index blocks of a file
+ * (and one page per object data page) to the owner. Measured in the emulator and checked
+ * against a real pack where data + index + object pages equals the stored "used" for 6 of 7
+ * users; see docs/NDFS-ALLOCATION-RULES.md section 7. The tests below therefore expect the
+ * structural blocks to be charged and still expect sparse holes to be free. */
 
-/* A file whose every page is DECLARED a hole must charge ZERO pages_used --
- * no data page is real, and no structural page is ever charged either.
+/* A file whose every page is DECLARED a hole charges no DATA page; only its index block
+ * (1 page) is charged.
  *
  * The holes have to be declared. Before 2026-08-18 this test passed all-zero
  * data to ndfs_write_file() and relied on the writer inferring the holes; that
@@ -1565,15 +1571,15 @@ static int test_quota_fully_sparse_file_charges_zero(void)
                                          NDFS_PARITY_NONE, &holes));
     used_after = get_user_pages_used(fs, "SYSTEM");
 
-    TEST_ASSERT_EQUAL(used_before, used_after);
+    TEST_ASSERT_EQUAL(used_before + 1, used_after); /* the index block */
 
     free(data);
     ndfs_close(fs);
     return 0;
 }
 
-/* A mixed file (some real pages, some DECLARED holes) must charge only the real
- * page count -- not the logical page count and not a structural add-on. */
+/* A mixed file (some real pages, some DECLARED holes) must charge the real page count plus
+ * its one index block -- not the logical page count. */
 static int test_quota_mixed_sparse_charges_only_real(void)
 {
     ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_360KB, "QMIXED");
@@ -1599,8 +1605,8 @@ static int test_quota_mixed_sparse_charges_only_real(void)
                                          NDFS_PARITY_NONE, &holes));
     used_after = get_user_pages_used(fs, "SYSTEM");
 
-    TEST_ASSERT_EQUAL(used_before + real_pages, used_after);
-    TEST_ASSERT(used_after - used_before < logical_pages); /* proves no over-charge */
+    TEST_ASSERT_EQUAL(used_before + real_pages + 1, used_after); /* + the index block */
+    TEST_ASSERT(used_after - used_before < logical_pages); /* proves holes are not charged */
 
     free(data);
     ndfs_close(fs);
@@ -1633,8 +1639,8 @@ static int test_zero_pages_are_not_holes_unless_declared(void)
     TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/NOHOLES:BPUN", data, size));
     used_after = get_user_pages_used(fs, "SYSTEM");
 
-    /* every page real: charged for all four, not zero */
-    TEST_ASSERT_EQUAL(used_before + logical_pages, used_after);
+    /* every page real: charged for all four, not zero, plus the index block */
+    TEST_ASSERT_EQUAL(used_before + logical_pages + 1, used_after);
 
     /* and the object entry agrees -- pages_in_file counts allocated pages */
     TEST_ASSERT_OK(ndfs_get_file_properties(fs, "SYSTEM/NOHOLES:BPUN", &xat));
@@ -1645,8 +1651,7 @@ static int test_zero_pages_are_not_holes_unless_declared(void)
     return 0;
 }
 
-/* A fully-real file must charge exactly its page count, with NO index-block
- * overhead added on top (the old code added a flat "+1"/"+struct_pages"). */
+/* A fully-real file charges its page count plus its index block (SINTRAN does; measured). */
 static int test_quota_fully_real_file_no_index_overhead(void)
 {
     ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_360KB, "QREAL");
@@ -1663,8 +1668,8 @@ static int test_quota_fully_real_file_no_index_overhead(void)
     TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/FULLREAL:DATA", data, size));
     used_after = get_user_pages_used(fs, "SYSTEM");
 
-    /* Exactly `pages` -- not pages+1 for the index block. */
-    TEST_ASSERT_EQUAL(used_before + pages, used_after);
+    /* `pages` data pages plus 1 for the index block. */
+    TEST_ASSERT_EQUAL(used_before + pages + 1, used_after);
 
     free(data);
     ndfs_close(fs);
@@ -1727,19 +1732,19 @@ static int test_quota_overwrite_grow_then_shrink(void)
     TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/GROWSHR:DATA",
                                    small, (size_t)small_pages * NDFS_PAGE_SIZE));
     used_small = get_user_pages_used(fs, "SYSTEM");
-    TEST_ASSERT_EQUAL(baseline + small_pages, used_small);
+    TEST_ASSERT_EQUAL(baseline + small_pages + 1, used_small);
 
     /* Grow: overwrite with a bigger, fully-real file. */
     TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/GROWSHR:DATA",
                                    big, (size_t)big_pages * NDFS_PAGE_SIZE));
     used_big = get_user_pages_used(fs, "SYSTEM");
-    TEST_ASSERT_EQUAL(baseline + big_pages, used_big);
+    TEST_ASSERT_EQUAL(baseline + big_pages + 1, used_big);
 
     /* Shrink: overwrite with a smaller, fully-real file. */
     TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/GROWSHR:DATA",
                                    tiny, (size_t)tiny_pages * NDFS_PAGE_SIZE));
     used_tiny = get_user_pages_used(fs, "SYSTEM");
-    TEST_ASSERT_EQUAL(baseline + tiny_pages, used_tiny);
+    TEST_ASSERT_EQUAL(baseline + tiny_pages + 1, used_tiny);
 
     free(small);
     free(big);
@@ -1786,9 +1791,9 @@ static int test_quota_subindexed_sparse_charges_only_real(void)
     }
     used_after = get_user_pages_used(fs, "SYSTEM");
 
-    /* Exactly the 2 real pages -- none of the sub-index/group-index
-     * structural blocks (which would need 1 + ceil(1000/512) = 3 pages). */
-    TEST_ASSERT_EQUAL(used_before + real_pages, used_after);
+    /* The 2 real pages plus the structural blocks SINTRAN charges: the sub-index block and
+     * the ceil(1000/512) = 2 group index blocks, 3 pages. */
+    TEST_ASSERT_EQUAL(used_before + real_pages + 3, used_after);
 
     free(data);
     ndfs_close(fs);

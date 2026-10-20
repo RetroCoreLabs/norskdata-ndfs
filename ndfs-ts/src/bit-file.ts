@@ -34,11 +34,24 @@ export class BitFile {
    */
   allocCeiling: number = 0;
 
+  /**
+   * Page where the bit file itself starts (BA). 0 = not known; the SINTRAN placement rules that
+   * start from BA then fall back to the top-down search.
+   */
+  bitAddress: number = 0;
+
+  /**
+   * The 256 page block of the last page given by {@link findFreeDataBlock}, or null for a fresh
+   * bit file (SINTRAN's "cold start").
+   */
+  cursorBlock: number | null = null;
+
   private bitmap: Uint8Array | null = null;
 
   /** Initialize a new empty bitmap for the given total page count. */
   initialize(totalPages: number): void {
     this.totalPages = totalPages;
+    this.cursorBlock = null;
     // Until the caller supplies the declared capacity, the whole device is allocatable.
     this.allocCeiling = totalPages;
     // Rounded up to a whole number of 16-bit WORDS. The bit file is word addressed
@@ -50,6 +63,7 @@ export class BitFile {
 
   /** Load bitmap data from raw bytes, padded to a whole number of 16-bit words. */
   loadBitmap(data: Uint8Array): void {
+    this.cursorBlock = null;
     this.bitmap = new Uint8Array((data.length + 1) & ~1);
     this.bitmap.set(data);
   }
@@ -159,6 +173,115 @@ export class BitFile {
     return -1;
   }
 
+  // ---- SINTRAN placement rules (RSBPG and RSPAG) -------------------------------------------
+  // See docs/NDFS-ALLOCATION-RULES.md and docs/CREATE-DIRECTORY-PLACEMENT.md.
+
+  private ceiling(): number {
+    let c = this.allocCeiling;
+    if (c <= 0 || c > this.totalPages) c = this.totalPages;
+    return c;
+  }
+
+  private pageOk(page: number, ceiling: number): boolean {
+    return page >= FIRST_ALLOCATABLE_BLOCK && page < ceiling && !this.isBlockUsed(page);
+  }
+
+  /**
+   * SINTRAN's RSBPG rule: index blocks, user and object pages.
+   *
+   * Start at page `hint OR 15` (the top bit of the bitmap word that holds the hint) and take the
+   * first free page going down. If the word is full: word+1 (lowest bit first), word-1 (highest
+   * bit first), word+2, word-2 and so on. Pages below the first allocatable block and at or above
+   * the ceiling are never given. The page is NOT marked used. Returns -1 when there is none.
+   */
+  findFreeNear(hint: number): number {
+    const ceiling = this.ceiling();
+    if (ceiling <= FIRST_ALLOCATABLE_BLOCK) return -1;
+    const nwords = (ceiling + 15) >>> 4;
+    let word = hint >>> 4;
+    if (word >= nwords) word = nwords - 1;
+    for (let bit = 15; bit >= 0; bit--) {
+      const p = word * 16 + bit;
+      if (this.pageOk(p, ceiling)) return p;
+    }
+    for (let step = 1; step <= nwords; step++) {
+      let w = word + step;
+      if (w < nwords) {
+        for (let bit = 0; bit < 16; bit++) {
+          const p = w * 16 + bit;
+          if (this.pageOk(p, ceiling)) return p;
+        }
+      }
+      if (word >= step) {
+        w = word - step;
+        for (let bit = 15; bit >= 0; bit--) {
+          const p = w * 16 + bit;
+          if (this.pageOk(p, ceiling)) return p;
+        }
+      }
+    }
+    return -1;
+  }
+
+  /**
+   * RSBPG rule with the hint taken from the bit file: `bitAddress - 1`. Falls back to
+   * {@link findFirstFreeBlock} when `bitAddress` is 0.
+   */
+  findFreeHint(): number {
+    if (this.bitAddress === 0) return this.findFirstFreeBlock();
+    return this.findFreeNear(this.bitAddress - 1);
+  }
+
+  /**
+   * First 256 page block RSPAG looks in when nothing was allocated yet: lastPage =
+   * (ceiling-1) div 16384, BP = (bitAddress+1) div 16384; lastPage > BP: block 0 of lastPage;
+   * lastPage = BP: the block of bitAddress+1; lastPage < BP: block 63 of lastPage. Returns page div 256.
+   */
+  coldStartBlock(): number {
+    const ceiling = this.ceiling();
+    const lastPage = (ceiling > 0 ? ceiling - 1 : 0) >>> 14;
+    const baPage = (this.bitAddress + 1) >>> 14;
+    if (lastPage > baPage) return lastPage * 64;
+    if (lastPage === baPage) return (this.bitAddress + 1) >>> 8;
+    return lastPage * 64 + 63;
+  }
+
+  /**
+   * SINTRAN's RSPAG rule: data pages of indexed files and files of one page.
+   *
+   * Search 256 page blocks: the cursor block (or the cold start block), then +1, -1, +2, -2 ...;
+   * in a block the LOWEST free page wins. On success the cursor moves to the block of the page
+   * found. The page is NOT marked used. Falls back to {@link findFirstFreeBlock} when `bitAddress`
+   * is 0. Returns -1 when the disk is full.
+   */
+  findFreeDataBlock(): number {
+    if (this.bitAddress === 0) return this.findFirstFreeBlock();
+    const ceiling = this.ceiling();
+    if (ceiling <= FIRST_ALLOCATABLE_BLOCK) return -1;
+    const nblocks = (ceiling + 255) >>> 8;
+    let b0 = this.cursorBlock !== null ? this.cursorBlock : this.coldStartBlock();
+    if (b0 >= nblocks) b0 = nblocks - 1;
+    for (let step = 0; step <= nblocks; step++) {
+      const cands: number[] = [];
+      if (step === 0) {
+        cands.push(b0);
+      } else {
+        if (b0 + step < nblocks) cands.push(b0 + step);
+        if (b0 >= step) cands.push(b0 - step);
+      }
+      for (const b of cands) {
+        for (let k = 0; k < 256; k++) {
+          const p = b * 256 + k;
+          if (this.pageOk(p, ceiling)) {
+            this.cursorBlock = b;
+            return p;
+          }
+        }
+      }
+    }
+    return -1;
+  }
+
   /**
    * Find a contiguous run of free blocks, scanning HIGH -> LOW so the run lands in the
    * highest available addresses (SINTRAN's downward range reserve, RSPAG 51120B -> TESTP).
@@ -222,10 +345,13 @@ export class BitFile {
    * Write bitmap data into page-aligned buffers for disk writing.
    * Returns an array of page buffers to write starting at the pointer's block ID.
    */
-  toPageBuffers(): Uint8Array[] {
+  toPageBuffers(maxPages?: number): Uint8Array[] {
     if (this.bitmap === null) return [];
 
-    const pagesNeeded = Math.ceil(this.bitmap.length / NDFS_PAGE_SIZE);
+    // SINTRAN sizes the bit file from the declared capacity, which can be fewer pages than the
+    // device length gives; maxPages limits the count.
+    let pagesNeeded = Math.ceil(this.bitmap.length / NDFS_PAGE_SIZE);
+    if (maxPages !== undefined && maxPages < pagesNeeded) pagesNeeded = maxPages;
     const pages: Uint8Array[] = [];
 
     for (let i = 0; i < pagesNeeded; i++) {

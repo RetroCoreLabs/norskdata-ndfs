@@ -21,6 +21,9 @@ ndfs_error_t ndfs_bf_init(ndfs_bit_file_t *bf, uint32_t total_pages)
     /* Until the caller supplies the directory's declared capacity, the whole device is
      * allocatable. ndfs_fs_* narrows this to ext_pages_available on mount. */
     bf->alloc_ceiling = total_pages;
+    bf->bit_address = 0;
+    bf->cursor_block = 0;
+    bf->cursor_valid = false;
     /* Rounded up to a whole number of 16-bit WORDS: the bit file is word addressed
      * (see bf_byte_index), so an odd byte count would leave the last word half present
      * and its high-byte pages past the end of the buffer. A 616-page ND floppy is the
@@ -181,6 +184,109 @@ ndfs_error_t ndfs_bf_find_free(const ndfs_bit_file_t *bf, uint32_t *out_block)
         }
         if (i == NDFS_FIRST_ALLOC_BLOCK) break;  /* floor reached; avoid unsigned wrap */
         i--;
+    }
+    return NDFS_ERR_NO_SPACE;
+}
+
+/* ---- SINTRAN placement rules (RSBPG and RSPAG) ----------------------------------------- */
+
+/* A page the placement rules may hand out. */
+static bool bf_page_ok(const ndfs_bit_file_t *bf, uint32_t p, uint32_t ceiling)
+{
+    return p >= NDFS_FIRST_ALLOC_BLOCK && p < ceiling && !ndfs_bf_is_used(bf, p);
+}
+
+static uint32_t bf_ceiling(const ndfs_bit_file_t *bf)
+{
+    uint32_t c = bf->alloc_ceiling;
+    if (c == 0 || c > bf->total_pages) c = bf->total_pages;
+    return c;
+}
+
+ndfs_error_t ndfs_bf_find_free_near(const ndfs_bit_file_t *bf, uint32_t hint, uint32_t *out_block)
+{
+    uint32_t ceiling, nwords, word, step, bit, w;
+
+    if (!bf || !out_block) return NDFS_ERR_NULL_PTR;
+    ceiling = bf_ceiling(bf);
+    if (ceiling <= NDFS_FIRST_ALLOC_BLOCK) return NDFS_ERR_NO_SPACE;
+    nwords = (ceiling + 15u) >> 4;
+    word = hint >> 4;
+    if (word >= nwords) word = nwords - 1;
+
+    for (bit = 16; bit-- > 0; ) {
+        uint32_t p = (word << 4) + bit;
+        if (bf_page_ok(bf, p, ceiling)) { *out_block = p; return NDFS_OK; }
+    }
+    for (step = 1; step <= nwords; step++) {
+        w = word + step;
+        if (w < nwords) {
+            for (bit = 0; bit < 16; bit++) {
+                uint32_t p = (w << 4) + bit;
+                if (bf_page_ok(bf, p, ceiling)) { *out_block = p; return NDFS_OK; }
+            }
+        }
+        if (word >= step) {
+            w = word - step;
+            for (bit = 16; bit-- > 0; ) {
+                uint32_t p = (w << 4) + bit;
+                if (bf_page_ok(bf, p, ceiling)) { *out_block = p; return NDFS_OK; }
+            }
+        }
+    }
+    return NDFS_ERR_NO_SPACE;
+}
+
+ndfs_error_t ndfs_bf_find_free_hint(const ndfs_bit_file_t *bf, uint32_t *out_block)
+{
+    if (!bf || !out_block) return NDFS_ERR_NULL_PTR;
+    if (bf->bit_address == 0) return ndfs_bf_find_free(bf, out_block);
+    return ndfs_bf_find_free_near(bf, bf->bit_address - 1u, out_block);
+}
+
+uint32_t ndfs_bf_cold_start_block(const ndfs_bit_file_t *bf)
+{
+    uint32_t ceiling = bf_ceiling(bf);
+    uint32_t last_page = (ceiling > 0 ? ceiling - 1u : 0u) >> 14;
+    uint32_t ba_page = (bf->bit_address + 1u) >> 14;
+
+    if (last_page > ba_page) return last_page * 64u;
+    if (last_page == ba_page) return (bf->bit_address + 1u) >> 8;
+    return last_page * 64u + 63u;
+}
+
+ndfs_error_t ndfs_bf_find_free_block(ndfs_bit_file_t *bf, uint32_t *out_block)
+{
+    uint32_t ceiling, nblocks, b0, step, k;
+
+    if (!bf || !out_block) return NDFS_ERR_NULL_PTR;
+    if (bf->bit_address == 0) return ndfs_bf_find_free(bf, out_block);
+    ceiling = bf_ceiling(bf);
+    if (ceiling <= NDFS_FIRST_ALLOC_BLOCK) return NDFS_ERR_NO_SPACE;
+    nblocks = (ceiling + 255u) >> 8;
+    b0 = bf->cursor_valid ? bf->cursor_block : ndfs_bf_cold_start_block(bf);
+    if (b0 >= nblocks) b0 = nblocks - 1;
+
+    for (step = 0; step <= nblocks; step++) {
+        uint32_t cand[2];
+        int ncand = 0, c;
+        if (step == 0) {
+            cand[ncand++] = b0;
+        } else {
+            if (b0 + step < nblocks) cand[ncand++] = b0 + step;
+            if (b0 >= step) cand[ncand++] = b0 - step;
+        }
+        for (c = 0; c < ncand; c++) {
+            for (k = 0; k < 256; k++) {
+                uint32_t p = (cand[c] << 8) + k;
+                if (bf_page_ok(bf, p, ceiling)) {
+                    *out_block = p;
+                    bf->cursor_block = cand[c];
+                    bf->cursor_valid = true;
+                    return NDFS_OK;
+                }
+            }
+        }
     }
     return NDFS_ERR_NO_SPACE;
 }

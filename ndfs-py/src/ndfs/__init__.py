@@ -26,6 +26,7 @@ from ndfs.constants import (
     OBJECT_ENTRY_IN_USE,
 )
 from ndfs.types import (
+    BootChoice,
     PointerType,
     BootFormat,
     BootControllerType,
@@ -64,7 +65,9 @@ from ndfs.access_permissions import (
     PERM_DELETE,
 )
 from ndfs.access_control import get_access_level, get_friend_permissions, check_access
-from ndfs.image_creator import create_image, TemplateSpec
+from ndfs.image_creator import create_image, options_for_disk_type, TemplateSpec
+from ndfs.disk_types import DiskType, DiskFamily, DISK_TYPES, disk_type_count, get_disk_type, find_disk_type
+from ndfs.boot_blobs import boot_blob, SCSI_LAST_PAGE
 from ndfs.boot_loader import load_boot_code, detect_boot_format, is_bootable, detect_controller_type
 from ndfs.sintran import (
     InitialCommands,
@@ -115,7 +118,7 @@ __all__ = [
     "USER_ENTRY_FLAG", "OBJECT_ENTRY_IN_USE",
     # Types / Enums
     "PointerType", "BootFormat", "BootControllerType", "FileAccessType", "FileOperationType",
-    "ChecksumValidation", "ImageTemplate", "FileTypeFlags",
+    "ChecksumValidation", "ImageTemplate", "BootChoice", "FileTypeFlags",
     "FileEntry", "BootCode", "ImageCreationOptions", "UserCreationInfo",
     # Endian helpers
     "read_uint16_be", "read_uint32_be", "write_uint16_be", "write_uint32_be",
@@ -132,7 +135,9 @@ __all__ = [
     "AccessPermissions", "PERM_READ", "PERM_WRITE", "PERM_APPEND", "PERM_EXECUTE", "PERM_DELETE",
     "get_access_level", "get_friend_permissions", "check_access",
     # Image creation
-    "create_image", "TemplateSpec",
+    "create_image", "options_for_disk_type", "TemplateSpec",
+    "DiskType", "DiskFamily", "DISK_TYPES", "disk_type_count", "get_disk_type", "find_disk_type",
+    "boot_blob", "SCSI_LAST_PAGE",
     # Boot loader
     "load_boot_code", "detect_boot_format", "is_bootable", "detect_controller_type",
     # SINTRAN initial commands

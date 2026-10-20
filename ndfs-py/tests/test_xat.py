@@ -81,8 +81,10 @@ def create_test_image(total_pages=50, dir_name="TESTDISK"):
     image[usr_data_off + 37] = 0
 
     bitmap_off = 11 * NDFS_PAGE_SIZE
-    image[bitmap_off] = 0xFF
-    image[bitmap_off + 1] = 0x0F
+    # The bit file is word addressed (page N is bit N%16 of big-endian word N/16), so pages
+    # 0-7 are in the SECOND byte of the pair and pages 8-15 in the first.
+    image[bitmap_off + 1] = 0xFF
+    image[bitmap_off] = 0x0F
 
     return bytes(image)
 
