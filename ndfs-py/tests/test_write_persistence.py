@@ -238,61 +238,36 @@ def _raw_ext_checksum_bytes(ndfs: NdfsFileSystem) -> bytes:
 
 
 class TestMasterBlockUnreservedPagesSync:
-    """The master block's cached "Unreserved Pages" field (page 0, offset
-    MASTER_BLOCK_OFFSET+0x1C) must be rewritten from the live bitmap after
-    every allocation-affecting mutation, since real SINTRAN trusts this
-    cached count instead of rescanning the bitmap."""
+    """The master block's "Unreserved Pages" field (page 0, offset MASTER_BLOCK_OFFSET+0x1C) is the pool
+    for user quotas, not a free page count. SINTRAN keeps it as capacity - bit file pages - 4 minus the sum
+    of the users' reserved pages (measured, docs/NDFS-ALLOCATION-RULES.md section 7a). Files do not change
+    it; giving, changing and taking away quota does."""
 
-    def test_create_file_updates_on_disk_unreserved_pages(self):
-        fs = _make_fs()
+    def test_fresh_image_value(self):
+        fs = _make_fs(2000)
+        # 2000 - 1 bit file page - 4 = 1995, SYSTEM holds the default quota of 500
+        assert _raw_unreserved_pages(fs) == 1995 - 1000
+
+    def test_files_do_not_change_the_pool(self):
+        fs = _make_fs(2000)
+        base = _raw_unreserved_pages(fs)
         fs.write_file("SYSTEM/A:DATA", b"hello world")
-        assert _raw_unreserved_pages(fs) == fs.get_free_pages()
-
-    def test_delete_file_updates_on_disk_unreserved_pages(self):
-        fs = _make_fs()
-        fs.write_file("SYSTEM/A:DATA", b"hello world")
-        free_after_create = fs.get_free_pages()
-
+        assert _raw_unreserved_pages(fs) == base
         fs.delete_file("SYSTEM/A:DATA")
-        free_after_delete = fs.get_free_pages()
+        assert _raw_unreserved_pages(fs) == base
 
-        assert free_after_delete > free_after_create
-        assert _raw_unreserved_pages(fs) == free_after_delete
-
-    def test_multi_step_sequence_tracks_after_each_step(self):
-        """Create A, create B, delete A -- the on-disk value must track the
-        live bitmap after EACH step, not just at the very end."""
-        fs = _make_fs()
-
-        fs.write_file("SYSTEM/A:DATA", b"aaaaaaaaaa")
-        assert _raw_unreserved_pages(fs) == fs.get_free_pages()
-        free_after_a = fs.get_free_pages()
-
-        fs.write_file("SYSTEM/B:DATA", b"bbbbbbbbbbbbbbbbbbbb")
-        assert _raw_unreserved_pages(fs) == fs.get_free_pages()
-        free_after_b = fs.get_free_pages()
-        assert free_after_b < free_after_a
-
-        fs.delete_file("SYSTEM/A:DATA")
-        assert _raw_unreserved_pages(fs) == fs.get_free_pages()
-        free_after_delete_a = fs.get_free_pages()
-        assert free_after_delete_a > free_after_b
-
-    def test_overwrite_updates_on_disk_unreserved_pages(self):
-        fs = _make_fs()
-        fs.write_file("SYSTEM/A:DATA", b"short")
-        free_after_first = _raw_unreserved_pages(fs)
-
-        # Overwrite with much larger, non-zero content -- consumes more data
-        # blocks. (An all-zero buffer would hit the sparse-hole path in
-        # _write_data_page_to_index and allocate no data blocks at all, which
-        # would defeat the point of this test.)
-        bigger = bytearray(5000)
-        for i in range(len(bigger)):
-            bigger[i] = (i & 0xFF) or 1
-        fs.write_file("SYSTEM/A:DATA", bigger)
-        assert _raw_unreserved_pages(fs) == fs.get_free_pages()
-        assert _raw_unreserved_pages(fs) != free_after_first
+    def test_quota_changes_move_the_pool(self):
+        fs = _make_fs(2000)
+        base = _raw_unreserved_pages(fs)
+        assert fs.add_user("ALPHA", 100)
+        assert _raw_unreserved_pages(fs) == base - 100
+        index = next(u.user_index for u in fs.get_users() if u.user_name == "ALPHA")
+        assert fs.update_user_quota(index, 300)
+        assert _raw_unreserved_pages(fs) == base - 300
+        assert fs.update_user_quota(index, 50)
+        assert _raw_unreserved_pages(fs) == base - 50
+        assert fs.remove_user(index)
+        assert _raw_unreserved_pages(fs) == base
 
     def test_extended_info_checksum_untouched_by_mutations(self):
         """The Extended Info Block checksum at raw offset 0x07D0 is a

@@ -445,8 +445,12 @@ export class NdfsFileSystem {
     if (files.length > 0) return false; // user has files
 
     const ok = this.userFile.removeUser(index);
-    // Removed user's UserFile page (slot zeroed by rebuild).
-    if (ok) this.writeUserPage(index);
+    // Removed user's UserFile page (slot zeroed by rebuild); its quota goes back to the Unreserved
+    // Pages pool in the master block.
+    if (ok) {
+      this.writeUserPage(index);
+      this.persistMasterBlock();
+    }
     return ok;
   }
 
@@ -454,7 +458,11 @@ export class NdfsFileSystem {
   updateUserQuota(index: number, newPages: number): boolean {
     this.ensureWritable();
     const ok = this.userFile.updateUserQuota(index, newPages);
-    if (ok) this.writeUserPage(index);
+    if (ok) {
+      this.writeUserPage(index);
+      // The quota is taken from the Unreserved Pages pool, so the master block changes too.
+      this.persistMasterBlock();
+    }
     return ok;
   }
 
@@ -2022,7 +2030,19 @@ export class NdfsFileSystem {
    * starting at MASTER_BLOCK_OFFSET (0x07E0), so this is safe.
    */
   private persistMasterBlock(): void {
-    this.masterBlock.unreservedPages = this.bitFile.getFreePages();
+    // Unreserved Pages is the pool for user quotas, not a free page count. SINTRAN keeps it as the
+    // pages a directory can hand out (capacity - 1 - bit file pages - 3: page 0, the user file's index
+    // block and data page, the object file's index block, and the object data page) minus the sum of
+    // what the users have reserved. Measured with SINTRAN M on 9 runs, see
+    // docs/NDFS-ALLOCATION-RULES.md section 7a. Setting it to the free page count made DIR show more
+    // unreserved pages than the directory has.
+    const total = this.bitFile.totalPages;
+    const cap = this.bitFile.allocCeiling || total;
+    const bitmapPages = NdfsFileSystem.bitFileDiskPages(this.masterBlock, total);
+    const avail = Math.max(0, cap - bitmapPages - 4);
+    let reserved = 0;
+    for (const u of this.userFile.getUsers()) reserved += u.pagesReserved;
+    this.masterBlock.unreservedPages = Math.max(0, avail - reserved);
     const page0 = this.readPage(0);
     this.masterBlock.writeToBytes(page0);
     this.writePage(0, page0);

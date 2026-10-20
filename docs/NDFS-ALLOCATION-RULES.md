@@ -193,6 +193,26 @@ data page (to the user whose entry caused the page). `EXPAND-FILE` and `ALLOCATE
 278 includes the 5 + 5 pages of X1 and A1). The counter in the user entry is written back late (after the next
 operations or at `RELEASE-DIRECTORY`), so reading it directly after one command can show the old number. MEASURED.
 
+## 7a. Unreserved Pages (master block offset 0x1C)
+
+Unreserved Pages is the pool for user quotas. It is not a count of free pages. MEASURED on 9 runs with SINTRAN M:
+
+ - After `CREATE-DIRECTORY` and one file, `unreserved = capacity - 1 - bit file pages - 3 - (sum of the reserved pages of all users)`.
+   The 3 are the user file's index block and data page and the object file's index block. Example: DISC-75MB, SYSTEM given
+   500 pages: 36945 - 1 - 3 - 3 - 500 = 36438 (read 36438).
+ - Before the first file exists the object data page is not made yet and the value is one higher (31939 with 5000 pages
+   given, 31938 after the first file). The libraries make that page when the image is made, so they use the second form.
+ - A second user (ALPHA) given 2000 pages took exactly 2000 from the pool (36938 - 5000 - 2000 = 29938 read), also with
+   its own object page made.
+ - Files, index blocks and deleting do not change it. `GIVE-USER-SPACE`, `CREATE-USER` with a quota and removing a user do.
+
+The libraries wrote the free page count of the whole device here after every write. That made SINTRAN's `DIR` show
+"37605 PAGES UNRESERVED" for a directory of 36945 pages, and it lets `GIVE-USER-SPACE` overbook the disk. All five
+libraries now keep the value above and write it again when a user is added, removed or gets a new quota
+(`test_unreserved_pages_is_the_quota_pool`, `TestMasterBlockUnreservedPagesSync`, `master block unreserved pages: ...`,
+`UnreservedPages_IsTheQuotaPool_...`). Still UNKNOWN: what SINTRAN does when the sum of the quotas is more than the pool.
+The libraries stop at 0.
+
 ## 8. Users and object entries
 
 - A new user (`CREATE-USER dir:name`, the user must exist in the main directory first) takes the next free slot of the user

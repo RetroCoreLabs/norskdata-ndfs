@@ -454,8 +454,10 @@ class NdfsFileSystem:
 
         ok = self._user_file.remove_user(index)
         if ok:
-            # Removed user's UserFile page (slot zeroed by rebuild).
+            # Removed user's UserFile page (slot zeroed by rebuild), and its quota goes back to the
+            # Unreserved Pages pool in the master block.
             self._write_user_page(index)
+            self._persist_master_block()
         return ok
 
     def update_user_quota(self, index: int, new_pages: int) -> bool:
@@ -464,6 +466,8 @@ class NdfsFileSystem:
         ok = self._user_file.update_user_quota(index, new_pages)
         if ok:
             self._write_user_page(index)
+            # The quota is taken from the Unreserved Pages pool, so the master block changes too.
+            self._persist_master_block()
         return ok
 
     def clear_user_password(self, index_or_name: Union[int, str]) -> bool:
@@ -2113,7 +2117,18 @@ class NdfsFileSystem:
         touch the separate Extended Info Block checksum at offset 0x07D0,
         so that unrelated structure is left byte-identical.
         """
-        self._master_block.unreserved_pages = self._bit_file.get_free_pages()
+        # Unreserved Pages is the pool for user quotas, not a free page count. SINTRAN keeps it as the
+        # pages a directory can hand out (capacity - 1 - bit file pages - 3: page 0, the user file's
+        # index block and data page, the object file's index block, and the object data page) minus
+        # the sum of what the users have reserved. Measured with SINTRAN M on 9 runs, see
+        # docs/NDFS-ALLOCATION-RULES.md section 7a. Setting it to the free page count made DIR show
+        # more unreserved pages than the directory has.
+        total = self._bit_file.total_pages
+        cap = self._bit_file.alloc_ceiling or total
+        bitmap_pages = self._bit_file_disk_pages(self._master_block, total)
+        avail = max(0, cap - bitmap_pages - 4)
+        reserved = sum(u.pages_reserved for u in self._user_file.get_users())
+        self._master_block.unreserved_pages = max(0, avail - reserved)
         page0 = bytearray(self._read_page(0))
         self._master_block.write_to_bytes(page0)
         self._write_page(0, page0)

@@ -182,51 +182,39 @@ describe('WritePersistence', () => {
     expect(fs2.getMetadata('SYSTEM/NOTYPE')!.type).toBe('');
   });
 
-  // Regression: the master block's cached "Unreserved Pages" field (page 0,
-  // offset 0x1C of the 32-byte master block) is what real SINTRAN reads to
-  // report free disk space -- it never rescans the bitmap itself. Every
-  // mutation that changes the bit file must keep this cached count in sync.
-  it('master block unreserved-pages count is rewritten on disk after creating a file', () => {
+  // The master block's "Unreserved Pages" field (page 0, offset 0x1C of the 32-byte master block) is the
+  // pool for user quotas, not a free page count. SINTRAN keeps it as capacity - bit file pages - 4 minus
+  // the sum of the users' reserved pages (measured, docs/NDFS-ALLOCATION-RULES.md section 7a). Files do
+  // not change it; giving, changing and taking away quota does.
+  it('master block unreserved pages: fresh image value', () => {
     const fs = createFS();
-    // Note: image-creator.ts seeds this field with a template placeholder
-    // (not necessarily the true free-page count) -- that pre-existing
-    // creation-time value is out of scope here. What matters is that the
-    // very first mutation makes the on-disk field match the live bit file.
-    const freeBeforeWrite = fs.getFreePages();
-
-    fs.writeFile('SYSTEM/A:DATA', new Uint8Array(3000)); // spans several pages
-    const after = readOnDiskUnreservedPages(fs);
-    expect(after).toBe(fs.getFreePages());
-    expect(after).toBeLessThan(freeBeforeWrite);
+    // createFS makes a custom image; SYSTEM holds the default quota.
+    const sys = fs.getUser(0)!;
+    const total = fs.getFreePages() + fs.getUsedPages();
+    expect(readOnDiskUnreservedPages(fs)).toBe(total - 1 - 4 - sys.pagesReserved);
   });
 
-  it('master block unreserved-pages count is rewritten on disk after deleting a file', () => {
+  it('master block unreserved pages: files do not change the pool', () => {
     const fs = createFS();
+    const base = readOnDiskUnreservedPages(fs);
     fs.writeFile('SYSTEM/A:DATA', new Uint8Array(3000));
-    const afterCreate = readOnDiskUnreservedPages(fs);
-
+    expect(readOnDiskUnreservedPages(fs)).toBe(base);
     fs.deleteFile('SYSTEM/A:DATA');
-    const afterDelete = readOnDiskUnreservedPages(fs);
-    expect(afterDelete).toBe(fs.getFreePages());
-    expect(afterDelete).toBeGreaterThan(afterCreate);
+    expect(readOnDiskUnreservedPages(fs)).toBe(base);
   });
 
-  it('master block unreserved-pages count tracks correctly across a sequence of mutations', () => {
-    const fs = createFS();
-
-    fs.writeFile('SYSTEM/A:DATA', new Uint8Array(1000));
-    const afterA = readOnDiskUnreservedPages(fs);
-    expect(afterA).toBe(fs.getFreePages());
-
-    fs.writeFile('SYSTEM/B:DATA', new Uint8Array(2000));
-    const afterB = readOnDiskUnreservedPages(fs);
-    expect(afterB).toBe(fs.getFreePages());
-    expect(afterB).toBeLessThan(afterA);
-
-    fs.deleteFile('SYSTEM/A:DATA');
-    const afterDeleteA = readOnDiskUnreservedPages(fs);
-    expect(afterDeleteA).toBe(fs.getFreePages());
-    expect(afterDeleteA).toBeGreaterThan(afterB);
+  it('master block unreserved pages: quota changes move the pool', () => {
+    const fs = createFS(2000);
+    const base = readOnDiskUnreservedPages(fs);
+    expect(fs.addUser('ALPHA', 100)).toBe(true);
+    expect(readOnDiskUnreservedPages(fs)).toBe(base - 100);
+    const index = fs.getUsers().find((u) => u.userName === 'ALPHA')!.userIndex;
+    expect(fs.updateUserQuota(index, 300)).toBe(true);
+    expect(readOnDiskUnreservedPages(fs)).toBe(base - 300);
+    expect(fs.updateUserQuota(index, 50)).toBe(true);
+    expect(readOnDiskUnreservedPages(fs)).toBe(base - 50);
+    expect(fs.removeUser(index)).toBe(true);
+    expect(readOnDiskUnreservedPages(fs)).toBe(base);
   });
 
   it('does not touch the Extended Info Block checksum when persisting unreserved pages', () => {

@@ -45,6 +45,9 @@ same options (checked with eight cases). The C# libraries follow the same rules;
 
 ### Fixed
 
+* All five libraries - Unreserved Pages in the master block was set to the free page count of the device after
+  every write; SINTRAN keeps it as the quota pool (capacity - bit file pages - 4 minus the users' reserved pages).
+  It is written again when a user is added, removed or gets a new quota. See `docs/NDFS-ALLOCATION-RULES.md` section 7a.
 * All three ports - the bit file size was taken from the length of the image. SINTRAN takes it from the declared
   capacity; on a device longer than the capacity (for example DISC-288MB-F, 153576 pages for 140391) the library
   read one page too many and `write_bit_file` could overwrite the page after the bit file. fsck called that page

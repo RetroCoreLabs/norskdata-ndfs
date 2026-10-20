@@ -1935,7 +1935,26 @@ static void persist_master_block(struct ndfs_filesystem *fs)
 {
     uint8_t *page0;
 
-    fs->master_block.unreserved_pages = ndfs_bf_count_free(&fs->bit_file);
+    /* Unreserved Pages is the pool for user quotas, not a free page count. SINTRAN keeps it as the
+     * pages a directory can hand out (capacity - 1 - bit file pages - 3: page 0, the user file's
+     * index block and data page, the object file's index block, and the object data page) minus the
+     * sum of what the users have reserved. Measured with SINTRAN M on 9 runs, see
+     * docs/NDFS-ALLOCATION-RULES.md section 7a. Setting it to the free page count made DIR show more
+     * unreserved pages than the directory has. */
+    {
+        uint32_t total = (uint32_t)(fs->size / NDFS_PAGE_SIZE);
+        uint32_t cap = fs->bit_file.alloc_ceiling ? fs->bit_file.alloc_ceiling : total;
+        uint32_t bmp = bit_file_disk_pages(&fs->master_block, total);
+        uint64_t sum = 0;
+        size_t u;
+        uint64_t avail;
+
+        for (u = 0; u < MAX_INTERNAL_USERS; u++) {
+            if (fs->user_valid[u]) sum += fs->users[u].pages_reserved;
+        }
+        avail = (uint64_t)cap > (uint64_t)bmp + 4u ? (uint64_t)cap - bmp - 4u : 0u;
+        fs->master_block.unreserved_pages = (uint32_t)(avail > sum ? avail - sum : 0u);
+    }
 
     page0 = write_page_ptr(fs, 0);
     if (!page0) return;
@@ -2964,7 +2983,9 @@ ndfs_error_t ndfs_remove_user(ndfs_filesystem_t *fs, uint8_t index)
     fs->user_valid[slot] = false;
     fs->user_count--;
 
-    /* Remove-user touches only this user's UserFile page (slot zeroed). */
+    /* Remove-user touches this user's UserFile page (slot zeroed) and gives its quota back to the
+     * Unreserved Pages pool in the master block. */
+    persist_master_block(fs);
     return commit_writes(fs, write_user_page(fs, index));
 }
 
@@ -2982,6 +3003,8 @@ ndfs_error_t ndfs_update_user_quota(ndfs_filesystem_t *fs,
 
     fs->users[slot].pages_reserved = new_pages;
 
+    /* The quota is taken from the Unreserved Pages pool, so the master block changes too. */
+    persist_master_block(fs);
     return commit_writes(fs, write_user_page(fs, index));
 }
 
