@@ -338,9 +338,87 @@ place. An embedded boot area is therefore only usable on a disk whose system is 
 system copied from an M disk. What is NOT known: whether an image made by `ndtool` with a K or L system copied onto it
 boots; nobody has put a system on a created image. The boot areas stay "not verified".
 
-A created image cannot be booted at all as it is: it holds a boot area and an empty directory, but no SINTRAN. A real test of a
-created disk means installing SINTRAN onto it from the installation floppies (the sections about floppies above) and then booting it.
-The test in this section only shows that a boot area of one generation does not start a system of another generation.
+A created image holds a boot area and an empty directory, but no SINTRAN. SINTRAN is put on it by installing from the
+installation floppies. If the disk already has a directory, this is an upgrade: CREATE-DIRECTORY is not run, and the boot
+area written by `ndtool` stays as it is (CREATE-DIRECTORY is what writes the boot area on a new disk).
+
+### 9a. Upgrade-path test with SINTRAN K (2026-10-20)
+
+MEASURED in the nd100x emulator, scratch directory ins under the oracle scripts:
+
+1. `ndtool --create smd75 --name PACK-ONE --boot smd` made a DISC-75MB image (embedded SMD boot area, directory present).
+2. Booted from floppy VSXK1.img (SINTRAN K installation diskette I, not stored in this repo). Installer asked DISK TYPE, answered 13 (DISC-75MB).
+3. MACM command `10,0$` loaded SINTRAN diskette I, `22!` started SINTRAN. CREATE-DIRECTORY was NOT run.
+4. ENTER-DIRECTORY PACK-ONE,DISC-75MB-1,0 gave no error.
+5. Emulator stopped with STOP-SYSTEM. Restarted with the floppy removed and `boot device = smd.0.0`: the hard disk booted to
+   `SINTRAN III RUNNING`, and ENTER-DIRECTORY PACK-ONE,DISC-75MB-1,0 again gave no error.
+
+So the embedded SMD boot area from `ndtool` boots a SINTRAN K system installed over it. NOT done: install of diskette II,
+and the same test for Winchester, SCSI and floppy boot areas.
+
+### 9b. Floppy boot test (2026-10-21)
+
+MEASURED in the nd100x emulator, `boot device = floppy.0.0`, run limited with `--max-instr` so a silent boot ends by itself:
+
+| Floppy | Console output |
+|---|---|
+| SINTRAN K diskette I as it is (control) | MACM-1718-Q prompt, disk type menu |
+| `ndtool --create custom --pages 616 --boot floppy616` (empty NDFS, no system) | none |
+| `ndtool --create floppy360 --boot floppy360` (empty NDFS, no system) | none |
+| `ndtool --create floppy12` (empty NDFS, no system) | none |
+| diskette I with bytes 0-1999 of page 0 replaced by the ndtool floppy616 area | MACM-1718-Q prompt, disk type menu (boots) |
+| diskette I with bytes 0-1999 of page 0 replaced by the ndtool floppy360 area | none |
+
+Follow-up on the 154 page floppy (SINTRAN H diskette I, `N-10-102-I.img`, 315392 bytes, 512 byte sectors): its bytes 0-1999 are
+identical to the `ndtool` floppy360 boot area (same hash 30089ec9). Booted as it is in nd100x, the real diskette gives no console
+output either, with and without the ndtool area swapped in. The emulator's BPUN loader accepts the stream (log: `BPUN load OK`,
+count 000100, `FloMon: 1`), but SINTRAN H diskette I never reaches MACM. So the 154 page boot cannot be tested in this
+emulator yet; the cause (emulator floppy model for 512 byte sectors, or the diskette itself) is UNKNOWN. This is not a fault in
+the ndtool boot area. Also UNKNOWN: whether a 5.25 inch 360 KB ND format exists; the template named floppy360 is the 154 page
+8 inch single sided format (315392 bytes), as the emulator source comment in device_floppy_dma.c lists only 154 page (8 inch) and
+616 page (5.25 inch 1.2 MB) formats.
+
+What a bootable system floppy looks like (CHECKED on the real diskettes with ndtool and byte search, and in the System Supervisor
+manual ND-30.003.7 section 4.2.2 and appendix D):
+
+- SINTRAN formats a floppy with `@DEVICE-FUNCTION FLOPPY-1`, function `SET-FLOPPY-FORMAT` (17 octal = 616 pages, 0 = 154 pages),
+  then function `FORMAT-FLOPPY`. `DUMP-BOOTSTRAP FLOPPY-MON` writes the boot stream into page 0 (manual ND-60.128.5 p.97).
+- The system files are the first files on user SYSTEM, at fixed pages. On the hard disk example the manual allocates
+  `SINTRAN:DATA` at page 1 and `MACM-AREA:DATA` at octal 100.
+- Measured page of the first data page of each file on the real diskette I: K (VSXK1): SINTRAN:DATA page 1, 574 pages allocated,
+  MACM-1718L:BPUN page 575. K05: SINTRAN:DATA page 1, MACM-1718L:BPUN page 575. H (154 pages): SINTRAN-I:DATA page 1,
+  MACM-1718K:BPUN page 128.
+- Zeroing the 20 pages of MACM at page 575 on VSXK1 stops the boot (no MACM prompt). So the boot reads MACM from its place on the floppy.
+- `ndtool --put` placed SINTRAN:DATA at page 276 and MACM at page 1 on a new floppy12, and that image does not boot.
+  Whether the boot code uses fixed pages or follows the directory entries: UNKNOWN (not traced).
+
+What FLOMON does (MEASURED 2026-10-21, nd100x, byte edits of a copy of SINTRAN K diskette I; Ronny's description: it loads the
+first :BPUN program of the directory and runs it, and with no binary it ends in a command line):
+
+| Edit of the copy | Console |
+|---|---|
+| none | MACM-1718-Q menu |
+| type of MACM entry changed from BPUN to DATA (no BPUN left) | `FLOPPY-MON-H00` and a `*` prompt: the command line |
+| name of MACM entry changed (MACM-1718L to MACM-1718M), type still BPUN | MACM menu: the name does not matter |
+| MACM data moved one page and the start page in its directory entry changed | MACM menu: the start page is read from the directory entry |
+| SINTRAN:DATA entry cleared (directory entry only) | MACM menu: not needed to start MACM |
+| MACM type DATA and SINTRAN:DATA type BPUN | command line (SINTRAN:DATA is not a BPUN stream) |
+
+So CONFIRMED: type BPUN in the directory entry selects the program, its start page comes from the entry, and with no BPUN the
+floppy monitor prompt `*` appears. NOT tested: which BPUN is taken when there are several (first or other).
+
+Extra requirement found: bytes 0x80 to 0x7FF of the bit file page (page 614 on the 616 page floppy; the master block bit file
+pointer is 0x266 = 614) hold about 968 non-zero words that look like monitor code (text 'NO SUCH FILE NAME'). Zeroing only those bytes
+on diskette I stops the boot (no output); zeroing or changing the bit file bits in the same page does not. `ndtool --rm` and
+`ndtool --create` leave that part zero, which is why a floppy changed or made by ndtool is silent. Copying those bytes into the
+bit file page of an ndtool made floppy (at page 306 where ndtool puts it, or at page 614) was NOT enough: the real floppy also
+differs in the master block (object 611, user 613, bit file 614; ndtool 316, 318, 306) and bytes 0x7D0 to 0x7DF of page 0 hold
+more of this code on the real floppy. Exact set of bytes the boot needs: UNKNOWN.
+
+So the embedded floppy616 boot area is good: it starts the floppy monitor and MACM from a floppy that holds them. A created floppy
+with no system on it prints nothing, because the boot area has nothing to load. The floppy360 area (a 154 page donor) does not
+start diskette I; since that floppy has no system either, this shows only that it does not fit a 616 page K floppy. NOT tested:
+the floppy360 area on a 360 KB floppy that holds a system, and a system copied onto a created floppy.
 
 To make a bootable created image the boot area has to come from a disk of the same SINTRAN generation as the system that
 is copied onto it. `ndtool --create --boot-from IMAGE` does that (it copies bytes 0 to 1999 of page 0 of IMAGE).
