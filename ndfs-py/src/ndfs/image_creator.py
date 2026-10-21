@@ -60,7 +60,8 @@ _TEMPLATES = {
     ImageTemplate.Smd75MB: TemplateSpec(36945, 38400, True, BootChoice.SMD, False),
     # Real Micropolis 1325 image: file 36864 pages, declared capacity 36396 (DISC-74MB).
     ImageTemplate.Winchester74MB: TemplateSpec(36396, 36864, True, BootChoice.WINCHESTER, False),
-    # Real SCSI image: SINTRAN accepts a SCSI disk only with exactly this length and the real last page.
+    # Real SCSI image: 64656 pages, the disk area table that SINTRAN reads is in the second half of page 64655
+    # (see docs/CREATE-DIRECTORY-ORACLE.md).
     ImageTemplate.Scsi126MB: TemplateSpec(61036, 64656, True, BootChoice.SCSI, True),
 }
 

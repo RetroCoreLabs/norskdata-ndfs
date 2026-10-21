@@ -25,9 +25,12 @@ NOT VERIFIED: nobody has booted an image made with these bytes. The three hard d
 are from different SINTRAN generations (K, L, K); which generation must match which system
 on the disk is unknown. SINTRAN itself rewrites page 0 at every cold start.
 
-scsi_last_page is the last page (page 64655) of scsi-1.img. SINTRAN refuses a SCSI disk whose
-last page is all zero (disk transfer error at address 0, measured with the real SINTRAN M in the
-emulator) and also one whose length differs from 64656 pages. Its 53 non-zero bytes are not decoded.
+scsi_last_page is the last page (page 64655) of scsi-1.img. SINTRAN reads the last 1024 byte
+block of the disk, which is the second half of this page, as a table of disk areas: 512 words,
+word 1 is the XOR of the other 511 words, then 6 word records {flag, 0, start (2 words), count
+(2 words)} from word 2. The count of record 0 gives the directory size (count / 2 pages). A wrong
+checksum or an all-zero block gives a disk transfer error (measured with the real SINTRAN M in
+the emulator). See docs/CREATE-DIRECTORY-ORACLE.md.
 """
 from __future__ import annotations
 

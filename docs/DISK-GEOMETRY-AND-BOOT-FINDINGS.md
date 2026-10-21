@@ -137,7 +137,7 @@ same hardware and differ only in capacity (for example MACM type 11 is "initiali
 | DISC-450MB-E, DISC-2-225MB-E, DISC-6-70MB-E | NEC D3525-H | 220584, 110292, 34765 | not tried |
 | names with N (DISC-288MB-N, DISC-450MB-N, ...) | not in this manual edition | 140391, 110292, 220584, 34765 | not tried |
 | FLOPPY-DISC-1, -2 | floppy controller, SS/SD or DS/DD, 5 1/4 and 8 inch | 154 | YES for 154 and 616 page images (runs 9, 10, 13) |
-| DISC-SCSI-1 and up, DISC-OPTICAL-1 to 4 | SCSI, optical | size 0 in the table (set from the drive) | SCSI YES only for the exact 64656 page image with its real last page (run 12) |
+| DISC-SCSI-1 and up, DISC-OPTICAL-1 to 4 | SCSI, optical | size 0 in the table (set from the drive) | SCSI YES for the 64656 page image with its real last page (run 12); what the last page holds: docs/CREATE-DIRECTORY-ORACLE.md |
 
 So the emulator can only prove the 75, 70 and 38 MB SMD packs, the 74 MB Winchester, the floppies and the one SCSI image. Everything else in this table is VALID as a SINTRAN device name (it is in the manual and the carved name table) but has NOT been created
 in this session. DISC-30MB, DISC-60MB and DISC-90MB are CMD or ND-IO cartridge types, not the CDC 9762 SMD pack family that nd100x emulates; creating DISC-30MB halts SINTRAN in the emulator.
@@ -196,8 +196,8 @@ Found through the `.ini` files in the ND folders (SINTRAN-M - 2026\RetroCore.ini
   So 36864 IS measured on a real Winchester image. ndfs-py and ndfs-ts already use these numbers; ndfs-c now does too.
 - CHECKED-HERE on the SCSI image scsi-1.img (same folder): 132415488 bytes = 64656 pages, declared capacity 61036 (checksum OK), object 30716, user 30718, bit file 30510 (= 9 x floor(floor(61036/2)/9)),
   4 bitmap pages, no used bit above the capacity, boot geometry block 512 then zeros and 30. The LAST page (64655) is not empty: 38 non-zero words, first word 036 octal; the same 38 words (word sum 54294)
-  are in SCSI-K.img and tor-disk.img (RonnyTest\HDLC1); scsi-125.img has 40 non-zero words with a different content. Pages 64640 to 64654 are all zero. What those words are is UNKNOWN
-  (the NPL source mentions a "control record" in the last block; 036 octal = 30 is also the index of the SCSI disk layout entry DTSSS, which is only a coincidence of numbers until shown otherwise).
+  are in SCSI-K.img and tor-disk.img (RonnyTest\HDLC1); scsi-125.img has 40 non-zero words with a different content. Pages 64640 to 64654 are all zero. What those words are: the second half of the page (page word 512 and up) is the SINTRAN disk area table, decoded in
+  docs/CREATE-DIRECTORY-ORACLE.md ("SCSI disk area table"). The first half (036 octal and the text) is not read by SINTRAN (measured).
 - 36396 as capacity is confirmed by the table (DT074 / DISC-74MB), by the geometry (1011 x 72 / 2) and by the images.
 - 36864 (Winchester device size in KERNEL-VERIFIED-CORRECTIONS.md and in RetroFS) is now measured on 1325.img (above). AGENT-REPORTED, INFERRED: 36864 = 1024 cylinders x 72 sectors / 2;
   the table says MAXCY 1021 and RESCY 1022, so the extra 2 cylinders have no source text.

@@ -63,7 +63,8 @@ function getTemplateSpec(options: ImageCreationOptions): TemplateSpec {
     // Real Micropolis 1325 image: file 36864 pages, declared capacity 36396 (DISC-74MB).
     case ImageTemplate.Winchester74MB:
       return { capacity: 36396, devicePages: 36864, extValid: true, boot: BootChoice.Winchester, scsiLastPage: false };
-    // Real SCSI image: SINTRAN accepts a SCSI disk only with exactly this length and the real last page.
+    // Real SCSI image: 64656 pages, the disk area table that SINTRAN reads is in the second half of page 64655
+    // (see docs/CREATE-DIRECTORY-ORACLE.md).
     case ImageTemplate.Scsi126MB:
       return { capacity: 61036, devicePages: 64656, extValid: true, boot: BootChoice.Scsi, scsiLastPage: true };
     case ImageTemplate.Custom: {

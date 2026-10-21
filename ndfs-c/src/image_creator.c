@@ -39,9 +39,10 @@ static const ndfs_template_spec_t spec_smd_75mb     = { 36945, 38400, true,  NDF
  * 36360 ended 36 pages before the pages the label says exist. */
 static const ndfs_template_spec_t spec_winchester_74mb = { 36396, 36864, true, NDFS_BOOTCODE_WINCHESTER, false };
 /* SCSI 126MB. Values read from the real SCSI image scsi-1.img: file is 64656 pages
- * (132415488 bytes), declared capacity 61036. SINTRAN accepts a SCSI disk only if its
- * length is exactly this and its LAST page holds the real, undecoded 53 bytes (measured:
- * an all-zero last page, or another length with that page, gives a disk transfer error). */
+ * (132415488 bytes), declared capacity 61036. The emulator's SCSI disk has 129312 blocks, so
+ * SINTRAN reads the disk area table in the second half of page 64655 (the real one is embedded).
+ * Without a valid table (checksum, a non-empty area 0) it gives a disk transfer error. A longer
+ * image with the table at page 64655 works (measured); a shorter one is not tested. */
 static const ndfs_template_spec_t spec_scsi_126mb   = { 61036, 64656, true,  NDFS_BOOTCODE_SCSI,       true  };
 
 static const ndfs_template_spec_t *get_spec(ndfs_image_template_t tmpl)

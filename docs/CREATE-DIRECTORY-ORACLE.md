@@ -92,11 +92,32 @@ SCSI has no special case. The rule is the same for every disk type and only need
 NOT settled (no measurement): fewer than 4 free pages in the home word (the code then spirals to the next word up, the next word down, ...), and the second user or object data page (the 33rd user or file).
 Older SINTRAN K and L made the pages in a different way (routine RSPAG: the highest free page of the 256-page block that holds BA, e.g. 18687 for BA 18468), which gives the +206 to +232 distances of the real older packs.
 
-### SCSI needs a valid last page (MEASURED)
-- An all-zero 64656 page image: CREATE-DIRECTORY fails with a disk transfer error (status 5020B, function 66B, at disk address 0) and the log shows the SCSI READ CAPACITY function (42B) before it.
-- The same image with only its LAST page copied from the real scsi-1.img: every command works (run 12). SINTRAN did not change that page.
-- Images of 40000 and 70000 pages with the same last page: the same transfer error again. So the last page must match the size of the disk; its 38 non-zero words (the first is 036 octal, a second group of words starts at word index 512) are not decoded.
-  Consequence for ndtool: a SCSI image of any size other than 64656 pages cannot be made bootable/usable until that record is decoded. UNKNOWN. The capacity 61036 written to the label did not come from the image size (64656) in any simple way; where it comes from is UNKNOWN (probably the same record).
+### SCSI disk area table in the last block (MEASURED and DECODED, 2026-10-21)
+Where it is (emulator source disk_scsi.c in nd100x, outside this repo; trace in the NDInsight note scsi-open-last-block-read.md, which also gives the decode): the emulator's SCSI disk is fixed at 898 cylinders x 8 heads x 18 sectors x 1024 bytes = 129312 blocks, and READ CAPACITY always reports last block 129311, whatever the image length. SINTRAN reads exactly that block: the second half of page 64655.
+
+Layout (512 words of the block, big endian; checked here on the embedded page, every record matches):
+- word 0 = 2048 (page size). Word 1 = the XOR of the other 511 words (checksum word; XOR of all 512 words = 0).
+- From word 2, records of 6 words: flag, 0, start (2 words), count (2 words), in blocks. The real scsi-1.img has: record 0 flag 0x8000 start 0 count 122072 (= 61036 pages, the usable area); records 1 to 7 flags 0xC000/0xE000 for the reserved blocks 129311, 129310, 129309, 129289 (20), 129269 (20) and 129098 (171) at the top of the disk; record 6 empty.
+
+Measured runs (real SINTRAN M, ENTER-DIRECTORY, DIR, CREATE-FILE on the image made by ndtool, WD system disk, SCSI on controller scsi.0):
+
+| Change to the embedded block | Result |
+|---|---|
+| none (control) | works, DIR shows 61036 pages |
+| regenerated block from the layout above (checksum recomputed) | works, identical bytes |
+| first 1024 bytes of the page zero (block 129310) | works: SINTRAN does not read that block |
+| second 1024 bytes zero | disk transfer error (status 5020B, function 66B, disk address 0) |
+| one bit wrong in word 1 | disk transfer error: the checksum is tested |
+| only record 0 (no reserved records) | works |
+| record 0 flag 0 | works: the flag is not tested here |
+| record 0 count 0, checksum right | no error, but the directory is not entered (DIR prints nothing) |
+| record 0 count 100000 (label made by ndtool says 61036) | works, DIR still shows 61036 (DIR reads the label) |
+| image of 70000 pages, table at page 64655 | works |
+| image of 70000 pages, table moved to its last page 69999 | disk transfer error |
+
+CREATE-DIRECTORY on a blank 64656 page image with only the last page set, record 0 count 100000: SINTRAN wrote capacity 50000 pages (0xC350) in the label, where the real table gives 61036 (0xEE6C). So the directory size on a SCSI disk is record 0 count / 2. Earlier text here said the last page "must match the size of the disk" and that the 61036 had no known source. Both were wrong: the table is read at block 129311 of the emulator's fixed disk, not at the end of the image, and the capacity comes from record 0.
+
+NOT tested: an image shorter than 64656 pages (the read goes past the end of the file; the old 40000 page failure fits that), other values of word 0, what the flags 0x8000/0xC000/0xE000 mean to SINTRAN, and whether a real drive of another size uses the same table (the emulator cannot show that: its disk size is fixed).
 
 ### Winchester images that are NOT usable as layout evidence
 Runs with Winchester DISC-28MB-1 and DISC-45MB-1 (blank images of exactly 13648 and 22032 pages): the emulator's Winchester disk maps SINTRAN's page numbers to file positions with its own geometry (the data landed at file pages 18184+ and 14688+ while the pointers say 6822 and 11016, and one file grew to 18217 pages). Their label pointers (page 0) are right but the file layout is not linear. Only the 74MB Winchester (run 4) is linear.
