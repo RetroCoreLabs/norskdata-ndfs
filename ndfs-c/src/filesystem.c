@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <ctype.h>
 
 /* ── Internal filesystem struct ──────────────────────────────────── */
@@ -94,14 +95,26 @@ struct ndfs_filesystem {
      * All zero on an intact image; above zero means the listing is what
      * survived a damaged one. */
     ndfs_damage_report_t damage;
+
+    /* fsck repair: while `active`, the first write to each page copies the old page here
+     * (4 byte block number, little endian, then 2048 bytes). See ndfs_fsck_ex(). */
+    struct {
+        bool     active;
+        bool     failed;
+        uint8_t *data;
+        size_t   len, cap;
+        uint8_t *seen;      /* one byte per page: already copied */
+    } undo;
 };
 
 /* ── Forward declarations ────────────────────────────────────────── */
 
 static const uint8_t *read_page(const struct ndfs_filesystem *fs, uint32_t block_id);
 static uint8_t *write_page_ptr(struct ndfs_filesystem *fs, uint32_t block_id);
+static void undo_capture(struct ndfs_filesystem *fs, uint32_t block, const uint8_t *old);
 static ndfs_error_t load_structures(struct ndfs_filesystem *fs);
 static ndfs_error_t write_bit_file(struct ndfs_filesystem *fs);
+static void write_bit_file_pages(struct ndfs_filesystem *fs);
 static ndfs_error_t write_user_page(struct ndfs_filesystem *fs, uint32_t user_index);
 static ndfs_error_t write_object_page(struct ndfs_filesystem *fs, uint32_t object_index);
 static void parse_path(const char *path,
@@ -250,6 +263,7 @@ static const uint8_t *read_page(const struct ndfs_filesystem *fs, uint32_t block
 static uint8_t *write_page_ptr(struct ndfs_filesystem *fs, uint32_t block_id)
 {
     ndfs_page_slot *slot = cache_get(fs, block_id, true);
+    if (slot && fs->undo.active) undo_capture(fs, block_id, slot->buf);
     return slot ? slot->buf : NULL;
 }
 
@@ -1971,14 +1985,15 @@ static void persist_master_block(struct ndfs_filesystem *fs)
  * disks). The bitmap is small, so it is written whole when allocation
  * changed — that mirrors the C# reference, which writes the affected BitFile
  * blocks on every allocate/free. */
-static ndfs_error_t write_bit_file(struct ndfs_filesystem *fs)
+/* Write the in-memory bitmap back to its disk pages (and nothing else). */
+static void write_bit_file_pages(struct ndfs_filesystem *fs)
 {
     const ndfs_master_block_t *mb = &fs->master_block;
     const uint8_t *bm_data;
     size_t bm_len;
     uint32_t bm_pages, i;
 
-    if (!ndfs_bp_is_valid(&mb->bit_file_ptr)) return NDFS_OK;
+    if (!ndfs_bp_is_valid(&mb->bit_file_ptr)) return;
 
     ndfs_bf_get_data(&fs->bit_file, &bm_data, &bm_len);
     bm_pages = bit_file_disk_pages(mb, (uint32_t)(fs->size / NDFS_PAGE_SIZE));
@@ -1992,6 +2007,13 @@ static ndfs_error_t write_bit_file(struct ndfs_filesystem *fs)
         if (src_off + copy_len > bm_len) copy_len = bm_len - src_off;
         if (copy_len > 0 && src_off < bm_len) memcpy(page, bm_data + src_off, copy_len);
     }
+}
+
+static ndfs_error_t write_bit_file(struct ndfs_filesystem *fs)
+{
+    if (!ndfs_bp_is_valid(&fs->master_block.bit_file_ptr)) return NDFS_OK;
+
+    write_bit_file_pages(fs);
 
     /* Every call site of write_bit_file() follows an actual allocate/free
      * (create/update/delete file), so this is exactly the choke point where
@@ -2638,6 +2660,69 @@ static ndfs_error_t write_file_impl(ndfs_filesystem_t *fs,
     return commit_writes(fs, err);
 }
 
+/* Put a contiguous file in the object file: `pages` pages from `start_block`, which must already
+ * be allocated in the bit file. Shared by ndfs_create_contiguous_file() and by the orphan recovery
+ * of fsck. Writes the object page, the user page and the bit file; the caller flushes. */
+static void register_contiguous_run(struct ndfs_filesystem *fs, ndfs_user_entry_t *user,
+                                    uint32_t obj_index, const char *obj_name, const char *file_type,
+                                    uint32_t start_block, uint32_t pages, uint32_t bytes_in_file)
+{
+    ndfs_object_entry_t entry;
+
+    ndfs_oe_init(&entry);
+    entry.object_index = obj_index;
+    {
+        size_t nlen = strlen(obj_name);
+        if (nlen > NDFS_NAME_MAX) nlen = NDFS_NAME_MAX;
+        memcpy(entry.object_name, obj_name, nlen);
+        entry.object_name[nlen] = '\0';
+        str_toupper(entry.object_name);
+    }
+    {
+        size_t tlen = strlen(file_type);
+        if (tlen > NDFS_TYPE_MAX) tlen = NDFS_TYPE_MAX;
+        memcpy(entry.type, file_type, tlen);
+        entry.type[tlen] = '\0';
+        str_toupper(entry.type);
+    }
+    entry.user_index = user->user_index;
+    /* The number SINTRAN shows is NOT the physical position: a user's files can
+     * span several object blocks, each a whole index block apart. Compute it here
+     * as well as on load, or a freshly created file reports number 0 until the
+     * image is reloaded. */
+    entry.file_number = (uint32_t)ndfs_oe_compute_file_number(entry.object_index,
+                                                              entry.user_index);
+    memcpy(entry.user_name, user->user_name, NDFS_NAME_MAX + 1);
+
+    /* Unlike an indexed file, allocated and logical extent are the same here,
+     * and both equal the reservation -- a contiguous run has no holes. */
+    entry.pages_in_file = pages;
+
+    /* Created empty: the pages exist, but no byte of them is file content yet.
+     * This is what the live machine reports for a fresh contiguous file. */
+    entry.bytes_in_file = bytes_in_file;
+
+    /* Points straight at the first data page. There is no index block to walk:
+     * page N of the file is simply block (file_pointer.block_id + N). */
+    entry.file_pointer.block_id = start_block;
+    entry.file_pointer.type = NDFS_PTR_CONTIGUOUS;
+    entry.access_bits = NDFS_ACCESS_DEFAULT;
+
+    /* Contiguous, not indexed -- the flag SINTRAN prints as "CONTINUOUS FILE". */
+    entry.file_type_flags = NDFS_FT_CONTIGUOUS;
+    entry.disk_object_index = (uint16_t)obj_index;
+    entry.next_version = (uint16_t)obj_index;
+    entry.prev_version = (uint16_t)obj_index;
+
+    add_object(fs, &entry);
+
+    user->pages_used += pages;
+
+    write_object_page(fs, obj_index);
+    write_user_page(fs, user->user_index);
+    write_bit_file(fs);
+}
+
 ndfs_error_t ndfs_create_contiguous_file(ndfs_filesystem_t *fs,
                                          const char *path,
                                          uint32_t pages)
@@ -2650,7 +2735,6 @@ ndfs_error_t ndfs_create_contiguous_file(ndfs_filesystem_t *fs,
     uint32_t start_block;
     uint32_t i;
     ndfs_user_entry_t *user;
-    ndfs_object_entry_t entry;
     ndfs_error_t err;
 
     if (!fs || !path) return NDFS_ERR_NULL_PTR;
@@ -2722,58 +2806,7 @@ ndfs_error_t ndfs_create_contiguous_file(ndfs_filesystem_t *fs,
         memset(page, 0, NDFS_PAGE_SIZE);
     }
 
-    ndfs_oe_init(&entry);
-    entry.object_index = obj_index;
-    {
-        size_t nlen = strlen(obj_name);
-        if (nlen > NDFS_NAME_MAX) nlen = NDFS_NAME_MAX;
-        memcpy(entry.object_name, obj_name, nlen);
-        entry.object_name[nlen] = '\0';
-        str_toupper(entry.object_name);
-    }
-    {
-        size_t tlen = strlen(file_type);
-        if (tlen > NDFS_TYPE_MAX) tlen = NDFS_TYPE_MAX;
-        memcpy(entry.type, file_type, tlen);
-        entry.type[tlen] = '\0';
-        str_toupper(entry.type);
-    }
-    entry.user_index = user->user_index;
-    /* The number SINTRAN shows is NOT the physical position: a user's files can
-     * span several object blocks, each a whole index block apart. Compute it here
-     * as well as on load, or a freshly created file reports number 0 until the
-     * image is reloaded. */
-    entry.file_number = (uint32_t)ndfs_oe_compute_file_number(entry.object_index,
-                                                              entry.user_index);
-    memcpy(entry.user_name, user->user_name, NDFS_NAME_MAX + 1);
-
-    /* Unlike an indexed file, allocated and logical extent are the same here,
-     * and both equal the reservation -- a contiguous run has no holes. */
-    entry.pages_in_file = pages;
-
-    /* Created empty: the pages exist, but no byte of them is file content yet.
-     * This is what the live machine reports for a fresh contiguous file. */
-    entry.bytes_in_file = 0;
-
-    /* Points straight at the first data page. There is no index block to walk:
-     * page N of the file is simply block (file_pointer.block_id + N). */
-    entry.file_pointer.block_id = start_block;
-    entry.file_pointer.type = NDFS_PTR_CONTIGUOUS;
-    entry.access_bits = NDFS_ACCESS_DEFAULT;
-
-    /* Contiguous, not indexed -- the flag SINTRAN prints as "CONTINUOUS FILE". */
-    entry.file_type_flags = NDFS_FT_CONTIGUOUS;
-    entry.disk_object_index = (uint16_t)obj_index;
-    entry.next_version = (uint16_t)obj_index;
-    entry.prev_version = (uint16_t)obj_index;
-
-    add_object(fs, &entry);
-
-    user->pages_used += pages;
-
-    write_object_page(fs, obj_index);
-    write_user_page(fs, user->user_index);
-    write_bit_file(fs);
+    register_contiguous_run(fs, user, obj_index, obj_name, file_type, start_block, pages, 0);
 
     return commit_writes(fs, NDFS_OK);
 }
@@ -3644,414 +3677,1102 @@ ndfs_error_t ndfs_verify_integrity(const ndfs_filesystem_t *fs, bool *out_ok)
     return NDFS_OK;
 }
 
-/* ── fsck reference-map helpers ───────────────────────────────────────
+/* -- fsck -----------------------------------------------------------
  *
- * These build the "how many files/structures reference each block" map used by
- * Phase 3. They deliberately mirror the PROVEN read/free enumerators
- * (read_indexed_data / read_subindexed_data / free_file_blocks and the
- * load_structures walks) so fsck sees exactly the blocks the rest of the code
- * treats as live -- earlier fsck used a second, incomplete walk that missed
- * whole classes of blocks (subindexed files, the multi-page bitmap, the object-
- * and user-file DATA pages) and reported them as phantom "orphans". */
+ * Phase 2 builds a map "which structure or file uses each block" that mirrors the PROVEN
+ * read/free enumerators (read_indexed_data / read_subindexed_data / free_file_blocks and the
+ * load_structures walks), so fsck sees exactly the blocks the rest of the code treats as live.
+ * An earlier fsck used a second, incomplete walk that missed whole classes of blocks (subindexed
+ * files, the multi page bitmap, the object and user file DATA pages) and reported them as
+ * phantom orphans.
+ *
+ * The map keeps, per block, the FIRST owner and the position inside that owner, so a block used
+ * twice can be reported with both owners. See docs/FSCK-FIX-PLAN.md. */
 
-/* Safely bump the reference count for one block (bounds- and saturation-checked).
- *
- * Reserved blocks (0..NDFS_FIRST_ALLOC_BLOCK-1) are never legitimate file,
- * index or data-page targets -- they hold the master block and its fixed
- * system structures, and Phase 3 already exempts that range from the orphan
- * check. A pointer INTO that range is always garbage (typically a stale byte
- * pattern in an unused index slot on a rewritten pack), so we never let it
- * bump a reference count: doing so used to manufacture phantom "cross-linked"
- * reports on blocks 1..6. */
-static void fsck_ref(uint8_t *refcount, uint32_t total_pages, uint32_t block_id)
+#define FSCK_OWNER_NONE    0u   /* the image as a whole (master block, pointers) */
+#define FSCK_OWNER_OBJ     1u   /* object file structure */
+#define FSCK_OWNER_USR     2u   /* user file structure */
+#define FSCK_OWNER_BIT     3u   /* bit file */
+#define FSCK_OWNER_FILE0  16u   /* + index into fs->objects */
+#define FSCK_POS_STRUCT   0xFFFFFFFFu  /* the index or sub-index block itself, not a data page */
+#define FSCK_MAX_RECORDS  100000u
+
+typedef enum {
+    FSCK_KIND_MASTER = 0,   /* master block or one of its pointers */
+    FSCK_KIND_PTR,          /* object entry with an unusable pointer */
+    FSCK_KIND_OOB,          /* pointer outside the device */
+    FSCK_KIND_UNREADABLE,   /* index or sub-index block that cannot be read */
+    FSCK_KIND_CROSS,        /* block used by two owners */
+    FSCK_KIND_FREE          /* block used but marked free in the bit file */
+} fsck_kind_t;
+
+typedef struct {
+    fsck_kind_t kind;
+    uint32_t    owner;
+    uint32_t    pos;
+    uint32_t    block;
+    char        reason[160];
+} fsck_rec_t;
+
+typedef struct {
+    uint32_t block;
+    uint32_t a_owner, a_pos;
+    uint32_t b_owner, b_pos;
+} fsck_cross_t;
+
+typedef struct {
+    uint32_t  *v;
+    size_t     n, cap;
+} fsck_list_t;
+
+typedef struct {
+    const struct ndfs_filesystem *fs;
+    uint32_t       total;
+    uint8_t       *refcount;
+    uint32_t      *owner;
+    uint32_t      *pos;
+    uint32_t       cur_owner;
+    uint32_t       cur_pos;
+    fsck_cross_t  *cross;
+    size_t         n_cross, cap_cross;
+    fsck_rec_t    *rec;
+    size_t         n_rec, cap_rec, dropped_rec;
+    uint32_t       n_oob;
+    uint32_t       n_reserved;     /* pointers into blocks 1..6, ignored */
+    uint32_t       n_unreadable;
+    bool           oom;
+} fsck_map_t;
+
+typedef struct {
+    char   *buf;
+    size_t  len, cap;
+    bool    oom;
+} fsck_text_t;
+
+static void fsck_say(fsck_text_t *t, const char *fmt, ...)
 {
-    if (block_id >= NDFS_FIRST_ALLOC_BLOCK && block_id < total_pages
-        && refcount[block_id] < 255)
-        refcount[block_id]++;
+    va_list ap;
+    int n;
+
+    if (t->oom) return;
+    for (;;) {
+        va_start(ap, fmt);
+        n = vsnprintf(t->buf + t->len, t->cap - t->len, fmt, ap);
+        va_end(ap);
+        if (n < 0) { t->oom = true; return; }
+        if ((size_t)n < t->cap - t->len) { t->len += (size_t)n; return; }
+        {
+            size_t ncap = t->cap * 2 + (size_t)n + 64;
+            char *nb = (char *)realloc(t->buf, ncap);
+            if (!nb) { t->oom = true; return; }
+            t->buf = nb;
+            t->cap = ncap;
+        }
+    }
 }
 
-/* Mark every real (non-hole) DATA pointer stored in ONE index block. `max_ptrs`
- * bounds the scan: NDFS_MAX_OBJECT_FILE_PTRS for object/data index blocks,
- * NDFS_MAX_USER_FILE_PTRS for the user-file index block. Mirrors
- * read_indexed_data() / count_real_data_pages_in_object(): block_id 0 is a
- * sparse hole (no disk page), everything else is a real data page. The index
- * block ITSELF is the caller's responsibility to count. */
-static void fsck_ref_index_data(const struct ndfs_filesystem *fs,
-                                uint8_t *refcount, uint32_t total_pages,
-                                uint32_t index_block_id, size_t max_ptrs)
+static void fsck_list_add(fsck_list_t *l, uint32_t v, bool *oom)
 {
+    if (l->n == l->cap) {
+        size_t ncap = l->cap ? l->cap * 2 : 256;
+        uint32_t *nv = (uint32_t *)realloc(l->v, ncap * sizeof(uint32_t));
+        if (!nv) { *oom = true; return; }
+        l->v = nv;
+        l->cap = ncap;
+    }
+    l->v[l->n++] = v;
+}
+
+static void fsck_owner_name(const struct ndfs_filesystem *fs, uint32_t owner, char *out, size_t n)
+{
+    if (owner == FSCK_OWNER_OBJ) { snprintf(out, n, "(object file)"); return; }
+    if (owner == FSCK_OWNER_USR) { snprintf(out, n, "(user file)"); return; }
+    if (owner == FSCK_OWNER_BIT) { snprintf(out, n, "(bit file)"); return; }
+    if (owner >= FSCK_OWNER_FILE0 && owner - FSCK_OWNER_FILE0 < fs->object_count) {
+        const ndfs_object_entry_t *o = &fs->objects[owner - FSCK_OWNER_FILE0];
+        snprintf(out, n, "%s/%s:%s", o->user_name, o->object_name, o->type);
+        return;
+    }
+    snprintf(out, n, "(image)");
+}
+
+static void fsck_fail(fsck_map_t *m, fsck_kind_t kind, uint32_t owner, uint32_t pos,
+                      uint32_t block, const char *fmt, ...)
+{
+    va_list ap;
+    fsck_rec_t *r;
+
+    if (m->n_rec >= FSCK_MAX_RECORDS) { m->dropped_rec++; return; }
+    if (m->n_rec == m->cap_rec) {
+        size_t ncap = m->cap_rec ? m->cap_rec * 2 : 64;
+        fsck_rec_t *nr = (fsck_rec_t *)realloc(m->rec, ncap * sizeof(fsck_rec_t));
+        if (!nr) { m->oom = true; return; }
+        m->rec = nr;
+        m->cap_rec = ncap;
+    }
+    r = &m->rec[m->n_rec++];
+    r->kind = kind;
+    r->owner = owner;
+    r->pos = pos;
+    r->block = block;
+    va_start(ap, fmt);
+    vsnprintf(r->reason, sizeof(r->reason), fmt, ap);
+    va_end(ap);
+}
+
+/* Count one reference to a block (bounds and saturation checked).
+ *
+ * Block 0 is a sparse hole and has no disk page. Blocks 1..6 are the reserved range (the
+ * master block and its fixed system structures); a pointer INTO that range is garbage,
+ * typically a stale byte pattern in an unused index slot on a rewritten pack. It is counted
+ * in n_reserved and never in refcount: counting it used to manufacture phantom "cross-linked"
+ * reports on blocks 1..6. A pointer at or above the device size is a real error. */
+static void fsck_ref(fsck_map_t *m, uint32_t block)
+{
+    if (block == 0) return;
+    if (block >= m->total) {
+        m->n_oob++;
+        fsck_fail(m, FSCK_KIND_OOB, m->cur_owner, m->cur_pos, block,
+                  "pointer to block %u, outside the device (%u pages)", block, m->total);
+        return;
+    }
+    if (block < NDFS_FIRST_ALLOC_BLOCK) { m->n_reserved++; return; }
+
+    if (m->refcount[block] > 0) {
+        if (m->n_cross < FSCK_MAX_RECORDS) {
+            fsck_cross_t *c;
+            if (m->n_cross == m->cap_cross) {
+                size_t ncap = m->cap_cross ? m->cap_cross * 2 : 64;
+                fsck_cross_t *nc = (fsck_cross_t *)realloc(m->cross, ncap * sizeof(fsck_cross_t));
+                if (!nc) { m->oom = true; return; }
+                m->cross = nc;
+                m->cap_cross = ncap;
+            }
+            c = &m->cross[m->n_cross++];
+            c->block = block;
+            c->a_owner = m->owner[block];
+            c->a_pos = m->pos[block];
+            c->b_owner = m->cur_owner;
+            c->b_pos = m->cur_pos;
+        }
+    } else {
+        m->owner[block] = m->cur_owner;
+        m->pos[block] = m->cur_pos;
+    }
+    if (m->refcount[block] < 255) m->refcount[block]++;
+}
+
+/* Mark every real (non-hole) DATA pointer stored in ONE index block. `max_ptrs` bounds the scan:
+ * NDFS_MAX_OBJECT_FILE_PTRS for object/data index blocks, NDFS_MAX_USER_FILE_PTRS for the user
+ * file index block. Mirrors read_indexed_data() / count_real_data_pages_in_object(). The index
+ * block ITSELF is the caller's responsibility to count. `base_pos` is the position (page in the
+ * file) of slot 0. */
+static void fsck_ref_index_data(fsck_map_t *m, uint32_t index_block_id, size_t max_ptrs,
+                                uint32_t base_pos)
+{
+    const struct ndfs_filesystem *fs = m->fs;
     const uint8_t *idx_page;
     size_t k;
 
-    if (index_block_id == 0 || index_block_id >= total_pages) return;
+    if (index_block_id == 0 || index_block_id >= m->total) return;
     idx_page = read_page(fs, index_block_id);
-    if (!idx_page) return;
-    /* idx_page held across up to max_ptrs reads of it -- pin its slot. */
+    if (!idx_page) {
+        m->n_unreadable++;
+        fsck_fail(m, FSCK_KIND_UNREADABLE, m->cur_owner, FSCK_POS_STRUCT, index_block_id,
+                  "index block %u cannot be read", index_block_id);
+        return;
+    }
+    /* idx_page is held across up to max_ptrs reads of it -- pin its slot. */
     cache_pin(fs, index_block_id);
     for (k = 0; k < max_ptrs; k++) {
         ndfs_block_pointer_t p = ndfs_bp_from_bytes(idx_page, k * 4);
-        if (p.block_id > 0)
-            fsck_ref(refcount, total_pages, p.block_id);
+        if (p.block_id > 0) {
+            m->cur_pos = base_pos + (uint32_t)k;
+            fsck_ref(m, p.block_id);
+        }
     }
     cache_unpin(fs, index_block_id);
 }
 
-/* Fully walk a SUBINDEXED structure: the sub-index block points at group-index
- * blocks (each a structural block), and each group-index block points at data
- * pages. Mirrors read_subindexed_data() / free_file_blocks()'s subindexed arm.
- * The sub-index block ITSELF is the caller's responsibility to count. */
-static void fsck_ref_subindexed(const struct ndfs_filesystem *fs,
-                                uint8_t *refcount, uint32_t total_pages,
-                                uint32_t sub_index_block_id)
+/* Fully walk a SUBINDEXED structure: the sub-index block points at group-index blocks (each a
+ * structural block), and each group-index block points at data pages. Mirrors
+ * read_subindexed_data() / free_file_blocks()'s subindexed arm. The sub-index block ITSELF is
+ * the caller's responsibility to count. */
+static void fsck_ref_subindexed(fsck_map_t *m, uint32_t sub_index_block_id)
 {
+    const struct ndfs_filesystem *fs = m->fs;
     const uint8_t *sub_page;
     size_t si;
 
-    if (sub_index_block_id == 0 || sub_index_block_id >= total_pages) return;
+    if (sub_index_block_id == 0 || sub_index_block_id >= m->total) return;
     sub_page = read_page(fs, sub_index_block_id);
-    if (!sub_page) return;
+    if (!sub_page) {
+        m->n_unreadable++;
+        fsck_fail(m, FSCK_KIND_UNREADABLE, m->cur_owner, FSCK_POS_STRUCT, sub_index_block_id,
+                  "sub-index block %u cannot be read", sub_index_block_id);
+        return;
+    }
     /* sub_page held across the whole walk -- pin it. */
     cache_pin(fs, sub_index_block_id);
     for (si = 0; si < NDFS_MAX_OBJECT_FILE_PTRS; si++) {
         ndfs_block_pointer_t idx_ptr = ndfs_bp_from_bytes(sub_page, si * 4);
         if (!ndfs_bp_is_valid(&idx_ptr)) continue;
         /* the group-index block is itself a real, allocated structural block */
-        fsck_ref(refcount, total_pages, idx_ptr.block_id);
+        m->cur_pos = FSCK_POS_STRUCT;
+        fsck_ref(m, idx_ptr.block_id);
         /* ...and the data pages it points at */
-        fsck_ref_index_data(fs, refcount, total_pages, idx_ptr.block_id,
-                            NDFS_MAX_OBJECT_FILE_PTRS);
+        fsck_ref_index_data(m, idx_ptr.block_id, NDFS_MAX_OBJECT_FILE_PTRS,
+                            (uint32_t)(si * NDFS_MAX_OBJECT_FILE_PTRS));
     }
     cache_unpin(fs, sub_index_block_id);
 }
 
-ndfs_error_t ndfs_fsck(const ndfs_filesystem_t *fs, char **out_report,
-                       int *out_errors)
+/* ---- analysis state ------------------------------------------------ */
+
+typedef struct {
+    int          errors;
+    int          warnings;
+    fsck_map_t   map;
+    fsck_list_t  orphans;          /* marked used, no owner, below the declared capacity */
+    fsck_list_t  free_ref;         /* used by a file or structure, marked free */
+    uint32_t     spare_marked_used;
+    uint32_t     multiply_referenced;
+    uint32_t     reserved_unmarked;/* blocks 0..6 not marked used */
+    bool         ext_checksum_bad;
+    bool         map_complete;     /* no master/pointer error, no outside pointer, no unreadable block */
+    bool         oom;
+} fsck_state_t;
+
+static void fsck_state_free(fsck_state_t *st)
 {
-    char *report;
-    size_t cap = 8192;
-    size_t len = 0;
-    int errors = 0;
-    int warnings = 0;
-    int n;
-    uint32_t total_pages;
+    free(st->map.refcount);
+    free(st->map.owner);
+    free(st->map.pos);
+    free(st->map.cross);
+    free(st->map.rec);
+    free(st->orphans.v);
+    free(st->free_ref.v);
+    memset(st, 0, sizeof(*st));
+}
+
+static bool fsck_page_all_zero(const struct ndfs_filesystem *fs, uint32_t block)
+{
+    const uint8_t *p = read_page(fs, block);
+    size_t i;
+    if (!p) return false;
+    for (i = 0; i < NDFS_PAGE_SIZE; i++)
+        if (p[i]) return false;
+    return true;
+}
+
+/* Print up to `limit` run lines "first..last (n blocks)" for a sorted block list. */
+static void fsck_say_runs(fsck_text_t *t, const fsck_list_t *l, size_t limit)
+{
+    size_t i = 0, shown = 0;
+    while (i < l->n) {
+        size_t j = i;
+        while (j + 1 < l->n && l->v[j + 1] == l->v[j] + 1) j++;
+        if (shown < limit) {
+            if (j == i) fsck_say(t, "      block %u\n", l->v[i]);
+            else        fsck_say(t, "      blocks %u..%u (%u blocks)\n", l->v[i], l->v[j],
+                                 (unsigned)(j - i + 1));
+        }
+        shown++;
+        i = j + 1;
+    }
+    if (shown > limit) fsck_say(t, "      ... and %u more runs\n", (unsigned)(shown - limit));
+}
+
+static void fsck_say_pos(fsck_text_t *t, uint32_t pos)
+{
+    if (pos == FSCK_POS_STRUCT) fsck_say(t, "index block");
+    else                        fsck_say(t, "page %u", pos);
+}
+
+static ndfs_error_t fsck_analyze(const struct ndfs_filesystem *fs, bool verbose,
+                                 fsck_text_t *t, fsck_state_t *st)
+{
+    fsck_map_t *m = &st->map;
+    const ndfs_master_block_t *mb = &fs->master_block;
+    uint32_t total_pages = (uint32_t)(fs->size / NDFS_PAGE_SIZE);
     uint32_t block;
     size_t i, j;
+    bool master_ok = true;
 
-    if (!fs || !out_report || !out_errors) return NDFS_ERR_NULL_PTR;
+    memset(st, 0, sizeof(*st));
+    m->fs = fs;
+    m->total = total_pages;
 
-    report = (char *)malloc(cap);
-    if (!report) return NDFS_ERR_ALLOC;
-
-    total_pages = (uint32_t)(fs->size / NDFS_PAGE_SIZE);
-
-#define APPEND(...) do { \
-    n = snprintf(report + len, cap - len, __VA_ARGS__); \
-    if (n > 0) len += (size_t)n; \
-    if (len + 512 > cap) { \
-        cap *= 2; \
-        report = (char *)realloc(report, cap); \
-        if (!report) return NDFS_ERR_ALLOC; \
-    } \
-} while(0)
-
-    APPEND("NDFS Filesystem Check\n");
-    APPEND("=====================\n");
-    APPEND("Volume: %s\n", fs->master_block.directory_name);
-    APPEND("Total pages: %u\n\n", total_pages);
+    fsck_say(t, "NDFS Filesystem Check\n");
+    fsck_say(t, "=====================\n");
+    fsck_say(t, "Volume: %s\n", mb->directory_name);
+    fsck_say(t, "Total pages: %u\n\n", total_pages);
 
     /* --- Phase 1: Master block validation --- */
-    APPEND("Phase 1: Master block\n");
-    if (!ndfs_mb_is_valid(&fs->master_block)) {
-        APPEND("  ERROR: Master block is invalid\n");
-        errors++;
+    fsck_say(t, "Phase 1: Master block\n");
+    if (!ndfs_mb_is_valid(mb)) {
+        fsck_say(t, "  ERROR: Master block is invalid\n");
+        fsck_fail(m, FSCK_KIND_MASTER, FSCK_OWNER_NONE, FSCK_POS_STRUCT, 0, "master block is invalid");
+        st->errors++;
+        master_ok = false;
     } else {
-        APPEND("  OK: Master block valid, directory name '%s'\n",
-               fs->master_block.directory_name);
+        fsck_say(t, "  OK: Master block valid, directory name '%s'\n", mb->directory_name);
     }
-    if (!ndfs_bp_is_valid(&fs->master_block.object_file_ptr)) {
-        APPEND("  ERROR: Object file pointer invalid\n");
-        errors++;
+    if (!ndfs_bp_is_valid(&mb->object_file_ptr)) {
+        fsck_say(t, "  ERROR: Object file pointer invalid\n");
+        fsck_fail(m, FSCK_KIND_MASTER, FSCK_OWNER_NONE, FSCK_POS_STRUCT, 0, "object file pointer invalid");
+        st->errors++;
+        master_ok = false;
     }
-    if (!ndfs_bp_is_valid(&fs->master_block.user_file_ptr)) {
-        APPEND("  ERROR: User file pointer invalid\n");
-        errors++;
+    if (!ndfs_bp_is_valid(&mb->user_file_ptr)) {
+        fsck_say(t, "  ERROR: User file pointer invalid\n");
+        fsck_fail(m, FSCK_KIND_MASTER, FSCK_OWNER_NONE, FSCK_POS_STRUCT, 0, "user file pointer invalid");
+        st->errors++;
+        master_ok = false;
     }
-    if (!ndfs_bp_is_valid(&fs->master_block.bit_file_ptr)) {
-        APPEND("  ERROR: Bit file pointer invalid\n");
-        errors++;
+    if (!ndfs_bp_is_valid(&mb->bit_file_ptr)) {
+        fsck_say(t, "  ERROR: Bit file pointer invalid\n");
+        fsck_fail(m, FSCK_KIND_MASTER, FSCK_OWNER_NONE, FSCK_POS_STRUCT, 0, "bit file pointer invalid");
+        st->errors++;
+        master_ok = false;
+    }
+    /* A wrong Extended Info Block checksum loses no data (SINTRAN rebuilds it on enter).
+     * Only reported when the block is there: a floppy has none (all words zero), and a
+     * FLOMON boot area is no Extended Info Block. */
+    if (!mb->has_flomon && mb->checksum_state == NDFS_CHECKSUM_INVALID &&
+        (mb->ext_checksum || mb->ext_reserved1 || mb->ext_reserved2 || mb->ext_reserved3 ||
+         mb->ext_flag_word || mb->ext_last_system_number || mb->ext_pages_available)) {
+        fsck_say(t, "  WARNING: Extended Info Block checksum is %04X, the words give %04X\n",
+                 mb->ext_checksum, mb->ext_calculated_checksum);
+        st->warnings++;
+        st->ext_checksum_bad = true;
     }
 
     /* --- Phase 2: Build reference count map --- */
-    APPEND("\nPhase 2: Block reference analysis\n");
+    fsck_say(t, "\nPhase 2: Block reference analysis\n");
 
-    /* Allocate a reference count array: how many times each block is referenced */
-    uint8_t *refcount = (uint8_t *)calloc(total_pages, sizeof(uint8_t));
-    if (!refcount) {
-        free(report);
-        return NDFS_ERR_ALLOC;
-    }
-
-    /* Mark system structural blocks AND the data pages behind them.
-     *
-     * Bug B fix: earlier code counted ONLY the master-block pointer targets
-     * (i.e. the object-file index block, the user-file index block, and the
-     * FIRST bitmap page). It never counted the object-file DATA pages, the
-     * user-file DATA pages, or the bitmap's additional pages, so Phase 3 saw
-     * every one of those legitimately-used blocks as an "orphan". */
+    m->refcount = (uint8_t *)calloc(total_pages, sizeof(uint8_t));
+    m->owner    = (uint32_t *)calloc(total_pages, sizeof(uint32_t));
+    m->pos      = (uint32_t *)calloc(total_pages, sizeof(uint32_t));
+    if (!m->refcount || !m->owner || !m->pos) { fsck_state_free(st); return NDFS_ERR_ALLOC; }
 
     /* Object file: its index/sub-index block + all its data (object) pages. */
-    if (ndfs_bp_is_valid(&fs->master_block.object_file_ptr)) {
-        uint32_t ob = fs->master_block.object_file_ptr.block_id;
-        fsck_ref(refcount, total_pages, ob);
-        if (fs->master_block.object_file_ptr.type == NDFS_PTR_SUBINDEXED)
-            fsck_ref_subindexed(fs, refcount, total_pages, ob);
+    if (ndfs_bp_is_valid(&mb->object_file_ptr)) {
+        uint32_t ob = mb->object_file_ptr.block_id;
+        m->cur_owner = FSCK_OWNER_OBJ;
+        m->cur_pos = FSCK_POS_STRUCT;
+        fsck_ref(m, ob);
+        if (mb->object_file_ptr.type == NDFS_PTR_SUBINDEXED)
+            fsck_ref_subindexed(m, ob);
         else
-            fsck_ref_index_data(fs, refcount, total_pages, ob,
-                                NDFS_MAX_OBJECT_FILE_PTRS);
+            fsck_ref_index_data(m, ob, NDFS_MAX_OBJECT_FILE_PTRS, 0);
     }
 
     /* User file: its index block + up to 8 user data pages (see load_structures). */
-    if (ndfs_bp_is_valid(&fs->master_block.user_file_ptr)) {
-        uint32_t ub = fs->master_block.user_file_ptr.block_id;
-        fsck_ref(refcount, total_pages, ub);
-        fsck_ref_index_data(fs, refcount, total_pages, ub,
-                            NDFS_MAX_USER_FILE_PTRS);
+    if (ndfs_bp_is_valid(&mb->user_file_ptr)) {
+        uint32_t ub = mb->user_file_ptr.block_id;
+        m->cur_owner = FSCK_OWNER_USR;
+        m->cur_pos = FSCK_POS_STRUCT;
+        fsck_ref(m, ub);
+        fsck_ref_index_data(m, ub, NDFS_MAX_USER_FILE_PTRS, 0);
     }
 
-    /* Bit file: the bitmap spans several CONTIGUOUS pages, not just block_id.
-     * Recompute its page span exactly as load_structures does. */
-    if (ndfs_bp_is_valid(&fs->master_block.bit_file_ptr)) {
-        uint32_t bitmap_pages = bit_file_disk_pages(&fs->master_block, total_pages);
-        uint32_t bb = fs->master_block.bit_file_ptr.block_id;
+    /* Bit file: the bitmap spans several CONTIGUOUS pages, not just block_id. */
+    if (ndfs_bp_is_valid(&mb->bit_file_ptr)) {
+        uint32_t bitmap_pages = bit_file_disk_pages(mb, total_pages);
+        uint32_t bb = mb->bit_file_ptr.block_id;
         uint32_t p;
-        for (p = 0; p < bitmap_pages; p++)
-            fsck_ref(refcount, total_pages, bb + p);
+        m->cur_owner = FSCK_OWNER_BIT;
+        for (p = 0; p < bitmap_pages; p++) {
+            m->cur_pos = p;
+            fsck_ref(m, bb + p);
+        }
     }
 
     /* Walk all file pointers */
     for (i = 0; i < fs->object_count; i++) {
         const ndfs_object_entry_t *obj = &fs->objects[i];
-        if (!ndfs_bp_is_valid(&obj->file_pointer)) continue;
+        uint32_t fp_block;
 
-        uint32_t fp_block = obj->file_pointer.block_id;
+        if (!ndfs_bp_is_valid(&obj->file_pointer)) continue;
+        fp_block = obj->file_pointer.block_id;
+        m->cur_owner = FSCK_OWNER_FILE0 + (uint32_t)i;
+
         if (fp_block >= total_pages) {
-            APPEND("  ERROR: File '%s:%s' (user %s) pointer block %u out of range\n",
-                   obj->object_name, obj->type, obj->user_name, fp_block);
-            errors++;
+            fsck_say(t, "  ERROR: File '%s:%s' (user %s) pointer block %u out of range\n",
+                     obj->object_name, obj->type, obj->user_name, fp_block);
+            fsck_fail(m, FSCK_KIND_PTR, m->cur_owner, FSCK_POS_STRUCT, fp_block,
+                      "file pointer to block %u, outside the device (%u pages)", fp_block, total_pages);
+            st->errors++;
             continue;
         }
 
         if (obj->file_pointer.type == NDFS_PTR_INDEXED) {
-            /* fp_block is a real, allocated structural index block -- count it
-             * once, then count each real data page it points at. Scan the whole
-             * index (NDFS_MAX_OBJECT_FILE_PTRS) and count only non-hole
-             * pointers, exactly like count_real_data_pages_in_object(); the old
-             * `j < pages_in_file` bound mis-counted sparse files. */
-            fsck_ref(refcount, total_pages, fp_block);
-            const uint8_t *idx_page = read_page(fs, fp_block);
-            if (idx_page) {
-                /* Scan the WHOLE index block (all 512 slots), counting every
-                 * real (non-hole) pointer, exactly like
-                 * count_real_data_pages_in_object() -- the index, not
-                 * bytes_in_file, is the truth of what pages a file physically
-                 * owns. A file's logical length (pages_in_file, derived from
-                 * bytes_in_file) is often SMALLER than the number of pages
-                 * recorded in its index; bounding the scan by pages_in_file (as
-                 * the original fsck did) leaves those extra, legitimately-owned
-                 * pages uncounted and reports them as phantom "orphans" -- that
-                 * was the bulk of the false orphan count on a healthy pack.
-                 * Garbage on a genuinely corrupt index is contained by three
-                 * guards: block_id==0 is a sparse hole (skipped), block_id in
-                 * the reserved range is rejected by fsck_ref(), and an
-                 * out-of-range block_id is reported as a real ERROR below. */
-                cache_pin(fs, fp_block);
-                for (j = 0; j < NDFS_MAX_OBJECT_FILE_PTRS; j++) {
-                    ndfs_block_pointer_t dp = ndfs_bp_from_bytes(idx_page, j * 4);
-                    if (dp.block_id > 0 && dp.block_id < total_pages) {
-                        fsck_ref(refcount, total_pages, dp.block_id);
-                    } else if (dp.block_id >= total_pages) {
-                        APPEND("  ERROR: File '%s:%s' data block %u out of range\n",
-                               obj->object_name, obj->type, dp.block_id);
-                        errors++;
-                    }
-                    /* block_id == 0 is a sparse hole, that's OK */
-                }
-                cache_unpin(fs, fp_block);
-            }
+            /* fp_block is a real, allocated structural index block: count it once, then each
+             * real data page it points at. The WHOLE index (all 512 slots) is scanned and only
+             * non-hole pointers counted, exactly like count_real_data_pages_in_object(): the
+             * index, not bytes_in_file, is the truth of what pages a file physically owns. */
+            m->cur_pos = FSCK_POS_STRUCT;
+            fsck_ref(m, fp_block);
+            fsck_ref_index_data(m, fp_block, NDFS_MAX_OBJECT_FILE_PTRS, 0);
         } else if (obj->file_pointer.type == NDFS_PTR_CONTIGUOUS) {
-            /* Bug A fix: for a CONTIGUOUS file, fp_block IS the first data page
-             * (see read_object_data / free_file_blocks) -- there is NO separate
-             * structural index block. The loop below already counts fp_block at
-             * j==0, so we must NOT pre-count it, or the file cross-links with
-             * itself and Phase 3 reports a phantom "cross-linked" block per
-             * contiguous file. */
+            /* For a CONTIGUOUS file, fp_block IS the first data page; there is no separate
+             * index block, so it must not be counted twice. */
+            uint32_t last = fp_block + (obj->pages_in_file ? obj->pages_in_file - 1u : 0u);
+            if (obj->pages_in_file && (last >= total_pages || last < fp_block)) {
+                fsck_say(t, "  ERROR: File '%s:%s' (user %s) runs past the end of the device\n",
+                         obj->object_name, obj->type, obj->user_name);
+                fsck_fail(m, FSCK_KIND_OOB, m->cur_owner, total_pages > fp_block ? total_pages - fp_block : 0u,
+                          total_pages, "contiguous run of %u pages from block %u passes the end of the device (%u pages)",
+                          obj->pages_in_file, fp_block, total_pages);
+                st->errors++;
+            }
             for (j = 0; j < obj->pages_in_file; j++) {
                 uint32_t db = fp_block + (uint32_t)j;
-                if (db < total_pages) {
-                    fsck_ref(refcount, total_pages, db);
-                }
+                if (db >= total_pages) break;
+                m->cur_pos = (uint32_t)j;
+                fsck_ref(m, db);
             }
         } else if (obj->file_pointer.type == NDFS_PTR_SUBINDEXED) {
-            /* Bug B fix: subindexed files used to be skipped entirely, so all
-             * their index/group/data blocks looked orphaned. fp_block is the
-             * sub-index block (structural); walk the rest. */
-            fsck_ref(refcount, total_pages, fp_block);
-            fsck_ref_subindexed(fs, refcount, total_pages, fp_block);
+            m->cur_pos = FSCK_POS_STRUCT;
+            fsck_ref(m, fp_block);
+            fsck_ref_subindexed(m, fp_block);
         }
     }
 
-    /* --- Phase 3: Bitmap vs reference check --- */
-    APPEND("\nPhase 3: Bitmap consistency\n");
+    /* Pointers outside the device and index blocks that could not be read, one line each. */
     {
-        uint32_t orphaned = 0;
-        uint32_t referenced_free = 0;
-        uint32_t multiply_referenced = 0;
-        uint32_t spare_marked_used = 0;
+        size_t shown = 0;
+        for (i = 0; i < m->n_rec; i++) {
+            const fsck_rec_t *r = &m->rec[i];
+            char who[96];
+            if (r->kind != FSCK_KIND_OOB && r->kind != FSCK_KIND_UNREADABLE) continue;
+            if (r->kind == FSCK_KIND_OOB && r->owner >= FSCK_OWNER_FILE0 &&
+                strncmp(r->reason, "contiguous run", 14) == 0) continue;   /* already printed */
+            fsck_owner_name(fs, r->owner, who, sizeof(who));
+            if (shown < 100)
+                fsck_say(t, "  ERROR: %s: %s\n", who, r->reason);
+            shown++;
+            st->errors++;
+        }
+        if (shown > 100) fsck_say(t, "  ... and %u more\n", (unsigned)(shown - 100));
+    }
+    if (m->n_reserved > 0)
+        fsck_say(t, "  INFO: %u pointers into the reserved blocks 1-6 were ignored\n", m->n_reserved);
 
+    /* --- Phase 3: Bitmap vs reference check --- */
+    fsck_say(t, "\nPhase 3: Bitmap consistency\n");
+    {
         /* WHY pages at or above the declared capacity are not orphans.
          *
-         * The "declared capacity" is the 32-bit Pages Available value in the
-         * Extended Info Block on page 0 (offset 0x07DC, SINTRAN words
-         * 1756B-1757B). It is read on mount into bit_file.alloc_ceiling. The
-         * bitmap covers the whole PHYSICAL device (e.g. 38400 pages), but the
-         * directory only hands out pages below the declared capacity (e.g.
-         * 36945). The pages from capacity to the end of the device are the
-         * drive's spare area for bad sectors. No file can legitimately own
-         * them, so "marked used, no owner" is meaningless there.
+         * The "declared capacity" is the 32-bit Pages Available value in the Extended Info
+         * Block on page 0 (offset 0x07DC, SINTRAN words 1756B-1757B). It is read on mount into
+         * bit_file.alloc_ceiling. The bitmap covers the whole PHYSICAL device (e.g. 38400
+         * pages), but the directory only hands out pages below the declared capacity (e.g.
+         * 36945). The pages from capacity to the end of the device are the drive's spare area
+         * for bad sectors. No file can legitimately own them, so "marked used, no owner" is
+         * meaningless there.
          *
-         * Measured on real images (read only): BIGDISK0-K-100.IMG leaves every
-         * bit in that area clear, but BIGDISK0-M-103.IMG (1455 pages) and
-         * WD0-SINTRAN-M.IMG (2004 pages) have EVERY bit in that area set. The
-         * old test reported all of them as orphans. Who sets those bits is
-         * NOT known; we therefore count them separately and print an INFO
-         * line instead of a warning, so the difference stays visible.
+         * Measured on real images (read only): BIGDISK0-K-100.IMG leaves every bit in that area
+         * clear, but BIGDISK0-M-103.IMG (1455 pages) and WD0-SINTRAN-M.IMG (2004 pages) have
+         * EVERY bit in that area set. The old test reported all of them as orphans. Who sets
+         * those bits is NOT known; they are counted separately and printed as an INFO line.
          * See docs/FSCK-ANALYSIS-AND-PLAN.md, Update 3.
          *
-         * alloc_ceiling equals total_pages when no valid Extended Info Block
-         * exists (floppies), which makes this area empty. */
+         * alloc_ceiling equals total_pages when no valid Extended Info Block exists
+         * (floppies), which makes this area empty. */
         for (block = 0; block < total_pages; block++) {
             bool in_bitmap = ndfs_bf_is_used(&fs->bit_file, block);
-            bool referenced = (refcount[block] > 0);
+            bool referenced = (m->refcount[block] > 0);
+
+            if (block < NDFS_FIRST_ALLOC_BLOCK && !in_bitmap) st->reserved_unmarked++;
 
             if (in_bitmap && !referenced && block >= NDFS_FIRST_ALLOC_BLOCK) {
-                if (block >= fs->bit_file.alloc_ceiling)
-                    spare_marked_used++;
-                else
-                    orphaned++;
+                if (block >= fs->bit_file.alloc_ceiling) st->spare_marked_used++;
+                else fsck_list_add(&st->orphans, block, &st->oom);
             }
-            if (!in_bitmap && referenced) {
-                referenced_free++;
+            if (!in_bitmap && referenced) fsck_list_add(&st->free_ref, block, &st->oom);
+            if (m->refcount[block] > 1) st->multiply_referenced++;
+        }
+
+        if (st->orphans.n > 0) {
+            fsck_say(t, "  WARNING: %u orphaned blocks (marked used but not referenced by any file)\n",
+                     (unsigned)st->orphans.n);
+            st->warnings++;
+        } else {
+            fsck_say(t, "  OK: No orphaned blocks\n");
+        }
+
+        if (st->spare_marked_used > 0) {
+            fsck_say(t, "  INFO: %u pages at or above the declared capacity (%u) are marked used in the bitmap (spare area, not orphans)\n",
+                     st->spare_marked_used, fs->bit_file.alloc_ceiling);
+        }
+
+        /* Not a finding: a directory made by SINTRAN M's CREATE-DIRECTORY leaves blocks 1-6 clear
+         * in the bit file (measured once, on a SCSI disk, 2026-10-21), while the real system disks
+         * WD0-SINTRAN-M.IMG and BIGDISK0-M-103.IMG have them set. R2 of docs/FSCK-FIX-PLAN.md
+         * therefore does not repair this. */
+        if (st->reserved_unmarked > 0) {
+            fsck_say(t, "  INFO: %u of the reserved blocks 0-6 are not marked used in the bitmap (not repaired: SINTRAN M leaves blocks 1-6 clear itself)\n",
+                     st->reserved_unmarked);
+        }
+
+        if (st->free_ref.n > 0) {
+            fsck_say(t, "  ERROR: %u blocks referenced by files but marked FREE in bitmap!\n",
+                     (unsigned)st->free_ref.n);
+            st->errors++;
+            for (i = 0; i < st->free_ref.n; i++) {
+                uint32_t b = st->free_ref.v[i];
+                fsck_fail(m, FSCK_KIND_FREE, m->owner[b], m->pos[b], b,
+                          "block %u is in use but marked free in the bit file", b);
             }
-            if (refcount[block] > 1) {
-                multiply_referenced++;
+        } else {
+            fsck_say(t, "  OK: All referenced blocks marked used in bitmap\n");
+        }
+
+        if (st->multiply_referenced > 0) {
+            fsck_say(t, "  ERROR: %u blocks referenced by multiple files (cross-linked)\n",
+                     st->multiply_referenced);
+            st->errors++;
+            for (i = 0; i < m->n_cross; i++) {
+                const fsck_cross_t *c = &m->cross[i];
+                char na[96], nb[96];
+                fsck_owner_name(fs, c->a_owner, na, sizeof(na));
+                fsck_owner_name(fs, c->b_owner, nb, sizeof(nb));
+                fsck_fail(m, FSCK_KIND_CROSS, c->a_owner, c->a_pos, c->block,
+                          "block %u is also used by %s", c->block, nb);
+                fsck_fail(m, FSCK_KIND_CROSS, c->b_owner, c->b_pos, c->block,
+                          "block %u is also used by %s", c->block, na);
             }
-        }
-
-        if (orphaned > 0) {
-            APPEND("  WARNING: %u orphaned blocks (marked used but not referenced by any file)\n",
-                   orphaned);
-            warnings++;
         } else {
-            APPEND("  OK: No orphaned blocks\n");
-        }
-
-        if (spare_marked_used > 0) {
-            APPEND("  INFO: %u pages at or above the declared capacity (%u) are marked used in the bitmap (spare area, not orphans)\n",
-                   spare_marked_used, fs->bit_file.alloc_ceiling);
-        }
-
-        if (referenced_free > 0) {
-            APPEND("  ERROR: %u blocks referenced by files but marked FREE in bitmap!\n",
-                   referenced_free);
-            errors++;
-        } else {
-            APPEND("  OK: All referenced blocks marked used in bitmap\n");
-        }
-
-        if (multiply_referenced > 0) {
-            APPEND("  ERROR: %u blocks referenced by multiple files (cross-linked)\n",
-                   multiply_referenced);
-            errors++;
-        } else {
-            APPEND("  OK: No cross-linked blocks\n");
+            fsck_say(t, "  OK: No cross-linked blocks\n");
         }
     }
 
     /* --- Phase 4: User quota verification --- */
-    APPEND("\nPhase 4: User quota verification\n");
+    fsck_say(t, "\nPhase 4: User quota verification\n");
     for (i = 0; i < MAX_INTERNAL_USERS; i++) {
-        if (!fs->user_valid[i]) continue;
-        const ndfs_user_entry_t *user = &fs->users[i];
-
-        /* Count actual (real, non-sparse) pages used by this user's files --
-         * must use the same basis pages_used is now maintained with:
-         * count_real_data_pages_in_object() walks each file's resolved
-         * block structure and counts only non-zero (real) BlockPointers,
-         * never sparse holes and never index/sub-index structural blocks.
-         * Using the old "pages_in_file (+1 for Indexed)" estimate here would
-         * emit a false WARNING for every sparse or SubIndexed file now that
-         * pages_used itself is charged on the real-page basis. */
+        const ndfs_user_entry_t *user;
         uint32_t actual_pages = 0;
+        if (!fs->user_valid[i]) continue;
+        user = &fs->users[i];
+
+        /* Same basis pages_used is maintained with: count_real_data_pages_in_object() walks
+         * each file's resolved block structure and counts only real (non-hole) pointers. */
         for (j = 0; j < fs->object_count; j++) {
-            if (fs->objects[j].user_index == user->user_index) {
+            if (fs->objects[j].user_index == user->user_index)
                 actual_pages += count_charged_pages_in_object(fs, &fs->objects[j]);
-            }
         }
         actual_pages += count_user_object_pages(fs, user->user_index);
 
         if (actual_pages != user->pages_used) {
-            APPEND("  WARNING: User '%s' pages_used=%u but actual file pages=%u\n",
-                   user->user_name, user->pages_used, actual_pages);
-            warnings++;
+            fsck_say(t, "  WARNING: User '%s' pages_used=%u but actual file pages=%u\n",
+                     user->user_name, user->pages_used, actual_pages);
+            st->warnings++;
         }
-
         if (user->pages_used > user->pages_reserved && user->pages_reserved > 0) {
-            APPEND("  WARNING: User '%s' over quota: using %u, reserved %u\n",
-                   user->user_name, user->pages_used, user->pages_reserved);
-            warnings++;
+            fsck_say(t, "  WARNING: User '%s' over quota: using %u, reserved %u\n",
+                     user->user_name, user->pages_used, user->pages_reserved);
+            st->warnings++;
         }
     }
 
     /* --- Phase 5: File structure validation --- */
-    APPEND("\nPhase 5: File structure validation\n");
+    fsck_say(t, "\nPhase 5: File structure validation\n");
     {
         uint32_t zero_byte_files = 0;
 
         for (i = 0; i < fs->object_count; i++) {
             const ndfs_object_entry_t *obj = &fs->objects[i];
 
-            if (obj->bytes_in_file == 0 && obj->pages_in_file > 0) {
-                zero_byte_files++;
-            }
-            if (!ndfs_bp_is_valid(&obj->file_pointer) && obj->pages_in_file > 0) {
-                APPEND("  ERROR: File '%s:%s' has %u pages but invalid pointer\n",
-                       obj->object_name, obj->type, obj->pages_in_file);
-                errors++;
+            if (obj->bytes_in_file == 0 && obj->pages_in_file > 0) zero_byte_files++;
+            if (!ndfs_bp_is_valid(&obj->file_pointer) &&
+                (obj->pages_in_file > 0 ||
+                 (obj->file_pointer.type == NDFS_PTR_RESERVED && obj->file_pointer.block_id != 0))) {
+                fsck_say(t, "  ERROR: File '%s:%s' has %u pages but invalid pointer\n",
+                         obj->object_name, obj->type, obj->pages_in_file);
+                fsck_fail(m, FSCK_KIND_PTR, FSCK_OWNER_FILE0 + (uint32_t)i, FSCK_POS_STRUCT,
+                          obj->file_pointer.block_id,
+                          "%u pages in file but the file pointer is not usable (block %u, type %u)",
+                          obj->pages_in_file, obj->file_pointer.block_id, (unsigned)obj->file_pointer.type);
+                st->errors++;
             }
         }
+        if (zero_byte_files > 0)
+            fsck_say(t, "  INFO: %u files with 0 bytes but allocated pages (device/system files)\n",
+                     zero_byte_files);
+    }
 
-        if (zero_byte_files > 0) {
-            APPEND("  INFO: %u files with 0 bytes but allocated pages (device/system files)\n",
-                   zero_byte_files);
+    /* The map is complete when nothing was skipped: a block that looks unreferenced may
+     * belong to a structure that could not be followed. */
+    st->map_complete = master_ok && m->n_oob == 0 && m->n_unreadable == 0;
+
+    if (verbose) {
+        fsck_say(t, "\nDetails (-v)\n");
+        fsck_say(t, "  Orphan runs: %u blocks\n", (unsigned)st->orphans.n);
+        fsck_say_runs(t, &st->orphans, 50);
+        fsck_say(t, "  Blocks used twice: %u\n", st->multiply_referenced);
+        for (i = 0; i < m->n_cross && i < 100; i++) {
+            const fsck_cross_t *c = &m->cross[i];
+            char na[96], nb[96];
+            fsck_owner_name(fs, c->a_owner, na, sizeof(na));
+            fsck_owner_name(fs, c->b_owner, nb, sizeof(nb));
+            fsck_say(t, "    block %u: %s ", c->block, na);
+            fsck_say_pos(t, c->a_pos);
+            fsck_say(t, " and %s ", nb);
+            fsck_say_pos(t, c->b_pos);
+            fsck_say(t, "\n");
+        }
+        if (m->n_cross > 100) fsck_say(t, "    ... and %u more\n", (unsigned)(m->n_cross - 100));
+        fsck_say(t, "  Quota per user (pages): reserved, stored used, counted from files, object pages\n");
+        for (i = 0; i < MAX_INTERNAL_USERS; i++) {
+            uint32_t files_pages = 0, obj_pages;
+            if (!fs->user_valid[i]) continue;
+            for (j = 0; j < fs->object_count; j++)
+                if (fs->objects[j].user_index == fs->users[i].user_index)
+                    files_pages += count_charged_pages_in_object(fs, &fs->objects[j]);
+            obj_pages = count_user_object_pages(fs, fs->users[i].user_index);
+            fsck_say(t, "    %-16s reserved %6u  stored %6u  files %6u  object pages %4u  difference %d\n",
+                     fs->users[i].user_name, fs->users[i].pages_reserved, fs->users[i].pages_used,
+                     files_pages, obj_pages,
+                     (int)fs->users[i].pages_used - (int)(files_pages + obj_pages));
+        }
+        fsck_say(t, "  Files with 0 bytes but allocated pages:\n");
+        {
+            size_t shown = 0, total_zero = 0;
+            for (i = 0; i < fs->object_count; i++) {
+                const ndfs_object_entry_t *o = &fs->objects[i];
+                if (o->bytes_in_file == 0 && o->pages_in_file > 0) {
+                    if (shown < 50) { fsck_say(t, "    %s/%s:%s (%u pages)\n", o->user_name, o->object_name, o->type, o->pages_in_file); shown++; }
+                    total_zero++;
+                }
+            }
+            if (total_zero > shown) fsck_say(t, "    ... and %u more\n", (unsigned)(total_zero - shown));
         }
     }
 
-    /* --- Summary --- */
-    APPEND("\n");
-    APPEND("========================================\n");
-    if (errors == 0 && warnings == 0) {
-        APPEND("Filesystem is CLEAN. No errors, no warnings.\n");
-    } else {
-        APPEND("Found %d error(s) and %d warning(s).\n", errors, warnings);
-    }
-
-    free(refcount);
-
-#undef APPEND
-
-    *out_report = report;
-    *out_errors = errors;
+    st->oom = st->oom || m->oom;
     return NDFS_OK;
+}
+
+/* ---- verdict, failed files ----------------------------------------- */
+
+static ndfs_fsck_verdict_t fsck_verdict(const fsck_state_t *st)
+{
+    if (st->errors > 0) return NDFS_FSCK_FAILED;
+    if (st->warnings > 0) return NDFS_FSCK_DAMAGED;
+    return NDFS_FSCK_CLEAN;
+}
+
+static const char *fsck_verdict_name(ndfs_fsck_verdict_t v)
+{
+    return v == NDFS_FSCK_FAILED ? "FAILED" : v == NDFS_FSCK_DAMAGED ? "DAMAGED" : "CLEAN";
+}
+
+static void fsck_say_summary(fsck_text_t *t, const fsck_state_t *st)
+{
+    fsck_say(t, "\n");
+    fsck_say(t, "========================================\n");
+    if (st->errors == 0 && st->warnings == 0)
+        fsck_say(t, "Filesystem is CLEAN. No errors, no warnings.\n");
+    else
+        fsck_say(t, "Found %d error(s) and %d warning(s).\n", st->errors, st->warnings);
+}
+
+/* The last lines of the report: the verdict, and every failed file with the first reason. */
+static void fsck_say_verdict(fsck_text_t *t, const struct ndfs_filesystem *fs,
+                             const fsck_state_t *st, bool machine_lines)
+{
+    const fsck_map_t *m = &st->map;
+    ndfs_fsck_verdict_t v = fsck_verdict(st);
+    size_t i, n_owner = 0, nslots = fs->object_count + FSCK_OWNER_FILE0 + 1;
+    uint8_t *seen = (uint8_t *)calloc(nslots, 1);
+
+    fsck_say(t, "\nIMAGE VERDICT: %s\n", fsck_verdict_name(v));
+    if (v != NDFS_FSCK_FAILED) { free(seen); return; }
+
+    for (i = 0; i < m->n_rec; i++) {
+        const fsck_rec_t *r = &m->rec[i];
+        if (r->owner < nslots && seen && !seen[r->owner]) { seen[r->owner] = 1; n_owner++; }
+    }
+    fsck_say(t, "FAILED FILES: %u\n", (unsigned)n_owner);
+    if (seen) memset(seen, 0, nslots);
+    for (i = 0; i < m->n_rec; i++) {
+        const fsck_rec_t *r = &m->rec[i];
+        char who[96];
+        if (seen && r->owner < nslots) { if (seen[r->owner]) continue; seen[r->owner] = 1; }
+        fsck_owner_name(fs, r->owner, who, sizeof(who));
+        fsck_say(t, "  %s  ", who);
+        if (r->pos == FSCK_POS_STRUCT) fsck_say(t, "(index block");
+        else fsck_say(t, "(data page %u", r->pos);
+        fsck_say(t, ", block %u): %s\n", r->block, r->reason);
+    }
+    if (m->dropped_rec) fsck_say(t, "  ... and %u more findings not kept\n", (unsigned)m->dropped_rec);
+
+    if (machine_lines) {
+        fsck_say(t, "\nFAILED|USER/NAME:TYPE|page-in-file|block|reason\n");
+        for (i = 0; i < m->n_rec; i++) {
+            const fsck_rec_t *r = &m->rec[i];
+            char who[96];
+            fsck_owner_name(fs, r->owner, who, sizeof(who));
+            if (r->pos == FSCK_POS_STRUCT) fsck_say(t, "FAILED|%s|-|%u|%s\n", who, r->block, r->reason);
+            else fsck_say(t, "FAILED|%s|%u|%u|%s\n", who, r->pos, r->block, r->reason);
+        }
+    }
+    free(seen);
+}
+
+/* ---- repairs ------------------------------------------------------- */
+
+#define FSCK_UNDO_MAGIC "NDFSUND1"
+#define FSCK_UNDO_MAGIC_LEN 8u
+
+static void undo_capture(struct ndfs_filesystem *fs, uint32_t block, const uint8_t *old)
+{
+    size_t need;
+
+    if (!fs->undo.active || !fs->undo.seen || block >= fs->total_pages) return;
+    if (fs->undo.seen[block]) return;
+    fs->undo.seen[block] = 1;
+    need = fs->undo.len + 4u + NDFS_PAGE_SIZE;
+    if (need > fs->undo.cap) {
+        size_t ncap = fs->undo.cap ? fs->undo.cap * 2 : 64u * 1024u;
+        uint8_t *nd;
+        while (ncap < need) ncap *= 2;
+        nd = (uint8_t *)realloc(fs->undo.data, ncap);
+        if (!nd) { fs->undo.failed = true; return; }
+        fs->undo.data = nd;
+        fs->undo.cap = ncap;
+    }
+    fs->undo.data[fs->undo.len + 0] = (uint8_t)(block & 0xFF);
+    fs->undo.data[fs->undo.len + 1] = (uint8_t)((block >> 8) & 0xFF);
+    fs->undo.data[fs->undo.len + 2] = (uint8_t)((block >> 16) & 0xFF);
+    fs->undo.data[fs->undo.len + 3] = (uint8_t)((block >> 24) & 0xFF);
+    memcpy(fs->undo.data + fs->undo.len + 4, old, NDFS_PAGE_SIZE);
+    fs->undo.len += 4u + NDFS_PAGE_SIZE;
+}
+
+/* One run of orphan pages that hold data, to become a contiguous file. */
+static ndfs_error_t fsck_recover_run(struct ndfs_filesystem *fs, int user_slot,
+                                     uint32_t start, uint32_t pages)
+{
+    ndfs_user_entry_t *user = &fs->users[user_slot];
+    char name[NDFS_NAME_MAX + 1];
+    char path[NDFS_NAME_MAX * 2 + NDFS_TYPE_MAX + 8];
+    uint32_t obj_index;
+
+    snprintf(name, sizeof(name), "ORPHAN-%u", start);
+    snprintf(path, sizeof(path), "%s/%s:DATA", user->user_name, name);
+    if (find_object(fs, path) >= 0) return NDFS_ERR_ALREADY_EXISTS;
+
+    {
+        int32_t avail = (int32_t)user->pages_reserved - (int32_t)user->pages_used;
+        if (avail < (int32_t)pages)
+            user->pages_reserved += pages - (avail > 0 ? (uint32_t)avail : 0u);
+    }
+    {
+        int alloc_err = allocate_user_object_slot(fs, user, &obj_index);
+        if (alloc_err != NDFS_OK) return (ndfs_error_t)alloc_err;
+    }
+    if (ensure_object_dir_page(fs, obj_index) == 0) return NDFS_ERR_NO_SPACE;
+
+    register_contiguous_run(fs, user, obj_index, name, "DATA", start, pages,
+                            pages * (uint32_t)NDFS_PAGE_SIZE);
+    return NDFS_OK;
+}
+
+static void fsck_say_block_line(fsck_text_t *t, bool dry, const char *rule, uint32_t block,
+                                const char *what, size_t *shown, size_t limit)
+{
+    if (*shown < limit)
+        fsck_say(t, "  %s%s block %u: %s\n", dry ? "would " : "", rule, block, what);
+    (*shown)++;
+}
+
+/* Run the repairs R1 to R5 of docs/FSCK-FIX-PLAN.md. `st` is the analysis of the image as it is.
+ * Returns the number of repairs done (or listed, in a dry run). */
+static ndfs_error_t fsck_repair(struct ndfs_filesystem *fs, const ndfs_fsck_options_t *o,
+                                fsck_state_t *st, fsck_text_t *t, int *n_repairs, bool *refused)
+{
+    const bool dry = o->dry_run;
+    const fsck_map_t *m = &st->map;
+    const ndfs_master_block_t *mb = &fs->master_block;
+    size_t i, shown;
+    int count = 0;
+    bool bits_changed = false;
+    bool wrote_page0 = false;
+
+    *n_repairs = 0;
+    *refused = false;
+    fsck_say(t, "\nRepairs%s\n=======\n", dry ? " (dry run, nothing is written)" : "");
+
+    if (!dry) {
+        if (fs->read_only) {
+            fsck_say(t, "  Not done: the image was opened read only.\n");
+            *refused = true;
+            return NDFS_ERR_READ_ONLY;
+        }
+        if (!o->force) {
+            fsck_say(t, "  Not done: stop any emulator or SINTRAN that has this image entered, then run again with -f.\n");
+            if (mb->ext_flag_word & NDFS_EXT_FLAG_ENTERED)
+                fsck_say(t, "  The Extended Info Block says the directory was left entered by system %u.\n",
+                         (unsigned)mb->ext_last_system_number);
+            *refused = true;
+            return NDFS_OK;
+        }
+        /* From here every page written is copied first, for --fsck-undo. */
+        fs->undo.seen = (uint8_t *)calloc(fs->total_pages, 1);
+        if (!fs->undo.seen) return NDFS_ERR_ALLOC;
+        fs->undo.data = NULL; fs->undo.len = 0; fs->undo.cap = 0; fs->undo.failed = false;
+        /* the header is written when the undo data is handed out */
+        fs->undo.active = true;
+    }
+
+    /* R1: a page that a file or structure uses, marked free in the bit file. */
+    shown = 0;
+    for (i = 0; i < st->free_ref.n; i++) {
+        uint32_t b = st->free_ref.v[i];
+        char who[96], what[160];
+        fsck_owner_name(fs, m->owner[b], who, sizeof(who));
+        snprintf(what, sizeof(what), "bit set (used by %s, was free)", who);
+        fsck_say_block_line(t, dry, "R1", b, what, &shown, 200);
+        if (!dry) { ndfs_bf_mark_used(&fs->bit_file, b); bits_changed = true; }
+        count++;
+    }
+    /* R4 and R5 use the reference map, so they run only when it is complete. */
+    if (st->orphans.n > 0 && !st->map_complete) {
+        fsck_say(t, "  Orphan repairs R4 and R5 skipped: the reference map is incomplete (%u pointers outside the device, %u unreadable index blocks, or a master block error), so a block that looks unreferenced may belong to a structure that could not be followed.\n",
+                 st->map.n_oob, st->map.n_unreadable);
+    } else if (st->orphans.n > 0) {
+        fsck_list_t data_orphans;
+        bool oom = false;
+        memset(&data_orphans, 0, sizeof(data_orphans));
+        /* R4: orphan page with all 2048 bytes zero: clear the bit. */
+        shown = 0;
+        for (i = 0; i < st->orphans.n; i++) {
+            uint32_t b = st->orphans.v[i];
+            if (fsck_page_all_zero(fs, b)) {
+                fsck_say_block_line(t, dry, "R4", b, "bit cleared (was used, page all zero)", &shown, 200);
+                if (!dry) { ndfs_bf_mark_free(&fs->bit_file, b); bits_changed = true; }
+                count++;
+            } else {
+                fsck_list_add(&data_orphans, b, &oom);
+            }
+        }
+        if (shown > 200) fsck_say(t, "  ... and %u more R4 repairs\n", (unsigned)(shown - 200));
+        /* R5: orphan pages with data are never freed. */
+        if (data_orphans.n > 0) {
+            if (!o->recover_orphans_user) {
+                fsck_say(t, "  %u orphan pages hold data and are kept as they are (use --recover-orphans USER to copy them into files).\n",
+                         (unsigned)data_orphans.n);
+            } else {
+                int user_slot = find_user_by_name(fs, o->recover_orphans_user);
+                if (user_slot < 0) {
+                    fsck_say(t, "  R5 not done: user '%s' does not exist.\n", o->recover_orphans_user);
+                } else {
+                    size_t a = 0;
+                    while (a < data_orphans.n) {
+                        size_t b2 = a;
+                        uint32_t start, pages;
+                        while (b2 + 1 < data_orphans.n && data_orphans.v[b2 + 1] == data_orphans.v[b2] + 1) b2++;
+                        start = data_orphans.v[a];
+                        pages = (uint32_t)(b2 - a + 1);
+                        if (dry) {
+                            fsck_say(t, "  would R5 blocks %u..%u (%u pages): new file %s/ORPHAN-%u:DATA\n",
+                                     start, start + pages - 1u, pages, o->recover_orphans_user, start);
+                            count++;
+                        } else {
+                            ndfs_error_t e = fsck_recover_run(fs, user_slot, start, pages);
+                            if (e == NDFS_OK) {
+                                fsck_say(t, "  R5 blocks %u..%u (%u pages): new file %s/ORPHAN-%u:DATA, the pages stay where they are\n",
+                                         start, start + pages - 1u, pages, o->recover_orphans_user, start);
+                                count++;
+                            } else {
+                                fsck_say(t, "  R5 blocks %u..%u: not done (%s)\n", start, start + pages - 1u, ndfs_strerror(e));
+                            }
+                        }
+                        a = b2 + 1;
+                    }
+                }
+            }
+        }
+        free(data_orphans.v);
+        if (oom) return NDFS_ERR_ALLOC;
+    }
+    /* R3: Extended Info Block checksum. */
+    if (st->ext_checksum_bad) {
+        fsck_say(t, "  %sR3 Extended Info Block checksum %04X -> %04X\n", dry ? "would " : "",
+                 mb->ext_checksum, mb->ext_calculated_checksum);
+        if (!dry) {
+            uint8_t *page0 = write_page_ptr(fs, 0);
+            if (page0) {
+                ndfs_mb_write_extended(&fs->master_block, page0);
+                fs->master_block.ext_checksum = fs->master_block.ext_calculated_checksum;
+                fs->master_block.checksum_state = NDFS_CHECKSUM_VALID;
+                wrote_page0 = true;
+            }
+        }
+        count++;
+    }
+    (void)wrote_page0;
+
+    if (!dry) {
+        if (bits_changed) write_bit_file_pages(fs);
+        cache_flush_all(fs);
+        fs->undo.active = false;
+        free(fs->undo.seen);
+        fs->undo.seen = NULL;
+        if (fs->undo.failed) {
+            fsck_say(t, "  WARNING: the undo data could not be kept completely (out of memory).\n");
+        }
+    }
+    if (count == 0) fsck_say(t, "  Nothing to repair.\n");
+    else if (!dry) fsck_say(t, "  %d repair(s) done. The undo data lists every page changed.\n", count);
+    *n_repairs = count;
+    return NDFS_OK;
+}
+
+/* ---- public API ---------------------------------------------------- */
+
+void ndfs_fsck_result_free(ndfs_fsck_result_t *r)
+{
+    if (!r) return;
+    free(r->report);
+    free(r->failures);
+    free(r->undo_data);
+    memset(r, 0, sizeof(*r));
+}
+
+ndfs_error_t ndfs_fsck_ex(ndfs_filesystem_t *fs, const ndfs_fsck_options_t *opts,
+                          ndfs_fsck_result_t *out)
+{
+    ndfs_fsck_options_t o;
+    fsck_text_t t;
+    fsck_state_t st;
+    ndfs_error_t err;
+    int n_repairs = 0;
+    bool refused = false;
+    size_t i;
+
+    if (!fs || !out) return NDFS_ERR_NULL_PTR;
+    memset(out, 0, sizeof(*out));
+    memset(&o, 0, sizeof(o));
+    if (opts) o = *opts;
+
+    memset(&t, 0, sizeof(t));
+    t.cap = 8192;
+    t.buf = (char *)malloc(t.cap);
+    if (!t.buf) return NDFS_ERR_ALLOC;
+    t.buf[0] = '\0';
+
+    err = fsck_analyze(fs, o.verbose, &t, &st);
+    if (err != NDFS_OK) { free(t.buf); return err; }
+    fsck_say_summary(&t, &st);
+
+    if (o.fix) {
+        err = fsck_repair(fs, &o, &st, &t, &n_repairs, &refused);
+        if (err != NDFS_OK && err != NDFS_ERR_READ_ONLY) {
+            fsck_state_free(&st);
+            free(t.buf);
+            return err;
+        }
+        out->repairs = n_repairs;
+        if (!o.dry_run && !refused && n_repairs > 0) {
+            /* Check again on the repaired image: the verdict and the exit code are those of this run. */
+            fsck_state_free(&st);
+            fsck_say(&t, "\n\nCheck after repair\n-----------------\n");
+            err = fsck_analyze(fs, false, &t, &st);
+            if (err != NDFS_OK) { free(t.buf); return err; }
+            fsck_say_summary(&t, &st);
+
+            if (fs->undo.data) {
+                out->undo_data = (uint8_t *)malloc(FSCK_UNDO_MAGIC_LEN + fs->undo.len);
+                if (out->undo_data) {
+                    memcpy(out->undo_data, FSCK_UNDO_MAGIC, FSCK_UNDO_MAGIC_LEN);
+                    memcpy(out->undo_data + FSCK_UNDO_MAGIC_LEN, fs->undo.data, fs->undo.len);
+                    out->undo_size = FSCK_UNDO_MAGIC_LEN + fs->undo.len;
+                }
+            }
+        }
+        free(fs->undo.data);
+        fs->undo.data = NULL; fs->undo.len = 0; fs->undo.cap = 0;
+    }
+    out->refused = refused;
+
+    fsck_say_verdict(&t, fs, &st, o.verbose);
+
+    if (t.oom) { fsck_state_free(&st); free(t.buf); return NDFS_ERR_ALLOC; }
+
+    out->errors = st.errors;
+    out->warnings = st.warnings;
+    out->verdict = fsck_verdict(&st);
+
+    /* The failure list for callers: every finding, with the file it belongs to. */
+    if (st.map.n_rec > 0) {
+        out->failures = (ndfs_fsck_failure_t *)calloc(st.map.n_rec, sizeof(ndfs_fsck_failure_t));
+        if (out->failures) {
+            out->n_failures = st.map.n_rec;
+            for (i = 0; i < st.map.n_rec; i++) {
+                const fsck_rec_t *r = &st.map.rec[i];
+                ndfs_fsck_failure_t *f = &out->failures[i];
+                fsck_owner_name(fs, r->owner, f->path, sizeof(f->path));
+                f->page_in_file = r->pos;
+                f->block = r->block;
+                snprintf(f->reason, sizeof(f->reason), "%s", r->reason);
+            }
+        }
+    }
+    out->report = t.buf;
+    fsck_state_free(&st);
+    return NDFS_OK;
+}
+
+ndfs_error_t ndfs_fsck(const ndfs_filesystem_t *fs, char **out_report, int *out_errors)
+{
+    ndfs_fsck_result_t r;
+    ndfs_error_t err;
+
+    if (!fs || !out_report || !out_errors) return NDFS_ERR_NULL_PTR;
+    /* Read only: no option asks for a repair, so the handle is not written. */
+    err = ndfs_fsck_ex((ndfs_filesystem_t *)(uintptr_t)fs, NULL, &r);
+    if (err != NDFS_OK) return err;
+    *out_report = r.report;
+    r.report = NULL;
+    *out_errors = r.errors;
+    ndfs_fsck_result_free(&r);
+    return NDFS_OK;
+}
+
+ndfs_error_t ndfs_fsck_undo(ndfs_filesystem_t *fs, const uint8_t *undo, size_t size,
+                            uint32_t *out_pages)
+{
+    size_t off = FSCK_UNDO_MAGIC_LEN;
+    uint32_t n = 0;
+
+    if (!fs || !undo) return NDFS_ERR_NULL_PTR;
+    if (fs->read_only) return NDFS_ERR_READ_ONLY;
+    if (size < FSCK_UNDO_MAGIC_LEN || memcmp(undo, FSCK_UNDO_MAGIC, FSCK_UNDO_MAGIC_LEN) != 0)
+        return NDFS_ERR_INVALID_ARG;
+    if ((size - FSCK_UNDO_MAGIC_LEN) % (4u + NDFS_PAGE_SIZE) != 0) return NDFS_ERR_INVALID_ARG;
+
+    /* Check every record before the first write. */
+    while (off < size) {
+        uint32_t block = (uint32_t)undo[off] | ((uint32_t)undo[off + 1] << 8) |
+                         ((uint32_t)undo[off + 2] << 16) | ((uint32_t)undo[off + 3] << 24);
+        if (block >= fs->total_pages) return NDFS_ERR_INVALID_ARG;
+        off += 4u + NDFS_PAGE_SIZE;
+    }
+    for (off = FSCK_UNDO_MAGIC_LEN; off < size; off += 4u + NDFS_PAGE_SIZE) {
+        uint32_t block = (uint32_t)undo[off] | ((uint32_t)undo[off + 1] << 8) |
+                         ((uint32_t)undo[off + 2] << 16) | ((uint32_t)undo[off + 3] << 24);
+        uint8_t *page = write_page_ptr(fs, block);
+        if (!page) return NDFS_ERR_IO;
+        memcpy(page, undo + off + 4, NDFS_PAGE_SIZE);
+        n++;
+    }
+    if (out_pages) *out_pages = n;
+    /* The in-memory structures are stale now: close the handle and open the image again. */
+    return cache_flush_all(fs);
 }
 
 ndfs_error_t ndfs_generate_report(const ndfs_filesystem_t *fs, char **out_report)

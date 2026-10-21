@@ -1,7 +1,8 @@
 # Plan: ndtool --fsck that reports hard and repairs only what is safe
 
-Status: PLAN ONLY. No code written. Evidence is in FSCK-ANALYSIS-AND-PLAN.md (same folder).
-Implementation point: ndfs-c/src/filesystem.c, function ndfs_fsck; options in ndfs-c/tools/ndtool/ndtool.c.
+Status 2026-10-21: steps 1 to 4 below are built (ndfs-c and ndtool only), step 5 is not. What was built, and where it differs
+from the plan, is in "What was built" at the end of this file. Evidence is in FSCK-ANALYSIS-AND-PLAN.md (same folder).
+Implementation point: ndfs-c/src/filesystem.c, functions ndfs_fsck_ex and ndfs_fsck_undo; the command is ndfs-c/tools/ndtool/cmd_fsck.c.
 Tests go into the existing ndfs-c/tests/test_fsck.c (no throwaway test programs).
 
 ## 1. Hard verdict (new, always printed, last lines of the report)
@@ -94,3 +95,29 @@ Port to ndfs-py/ndfs-ts is NOT needed (fsck is C only by design).
 3. R1, R2, R3, R4 with undo file and the -n mode.
 4. R5 and --salvage.
 5. R6 only after TODO T7/T8/T9 are answered by the emulator experiments.
+
+## What was built (2026-10-21)
+
+Checked by: the new tests in ndfs-c/tests/test_fsck.c (21 in the fsck suite, all pass), runs of `ndtool --fsck` on small
+images made with ndtool and damaged by hand (dry run, refused without -f, repair, check again, undo giving a byte-identical image,
+orphan recovery, salvage), and `ndtool --fsck` on two real SINTRAN M system disks (WD0-SINTRAN-M.IMG and BIGDISK0-M-103.IMG), where the
+report is the same as before except the new INFO line and the verdict.
+
+| Plan step | State |
+|---|---|
+| 2 verdict, exit codes, failed files, -v | DONE. Exit code 3 added (ndtool could not do what was asked). The owner of each block is kept in the reference map, so a cross-link names both files and the page of each. |
+| 3 R1, R3, R4, undo file, -n, -f | DONE. The undo data is made by the library: the first write to a page during a repair copies the old page (block number and 2048 bytes). ndtool writes IMAGE.fsck-undo before it writes the image. |
+| 4 R5 and --salvage | DONE. R5: each run of consecutive orphan pages that hold data becomes a contiguous file USER/ORPHAN-n:DATA (n = first block) of the user given to --recover-orphans, the pages stay where they are, and the user's reservation is raised if the files would not fit. |
+| 5 R6 (recompute pages_used) | NOT done. The plan says it waits for T7, T8 and T9, which need the emulator. |
+| R2 (set bits of blocks 0 to 6) | NOT done, on purpose. A directory made by SINTRAN M's CREATE-DIRECTORY leaves blocks 1 to 6 clear in the bit file (measured on one image from a CREATE-DIRECTORY run, a SCSI disk, 2026-10-21), while the two real system disks WD0-SINTRAN-M.IMG and BIGDISK0-M-103.IMG have them set. fsck prints an INFO line and repairs nothing. |
+
+Differences from the text above:
+- Condition 4 of section 1 (a pointer into the reserved blocks 0 to 6) is not FAILED. It is an INFO line ("pointers into the reserved blocks 1-6 were ignored") because
+  the old code comment says such pointers are stale bytes in unused index slots on rewritten packs, and the two real packs above show 6 of them while being usable.
+  Pointers at or above the device size ARE FAILED.
+- R5 names the file ORPHAN-n:DATA and gives it to the user named on the command line. The plan wrote LOSTFOUND/ORPHAN-n:DATA, which cannot be both a user and an owner.
+- The Extended Info Block checksum (R3) is reported as a WARNING (DAMAGED) only when the block is there: a floppy has none, and a FLOMON boot area is not one.
+- A repair needs -f (or -n for a list). Whether SINTRAN has the directory entered cannot be seen in the file; the Extended Info flag is printed when it is set.
+
+Not tested: --fix on an image that SINTRAN or the emulator still has entered; images over 100000 findings (the lists are cut at 100000 and the cut is printed).
+

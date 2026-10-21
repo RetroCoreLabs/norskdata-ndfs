@@ -103,6 +103,11 @@ int cmd_shell(ndtool_ctx_t *ctx);
 int cmd_stat(ndtool_ctx_t *ctx, const char *path, bool verbose);
 int cmd_chmod(ndtool_ctx_t *ctx, const char *spec, const char *path);
 
+/* --fsck: check, optional safe repairs, salvage. Returns the exit code (0 CLEAN, 1 DAMAGED, 2 FAILED, 3 tool error). */
+int cmd_fsck(ndtool_ctx_t *ctx, bool fix, const char *recover_user, const char *salvage_dir);
+/* --fsck-undo: put back the pages saved in IMAGE.fsck-undo. */
+int cmd_fsck_undo(ndtool_ctx_t *ctx);
+
 /* stat/chmod helpers (also used by the access-edit command) */
 void ndtool_format_nd_date(uint32_t v, char *out, size_t len);
 void ndtool_access_tier_str(uint16_t access_bits, unsigned shift, char *out, size_t len);

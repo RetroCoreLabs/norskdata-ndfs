@@ -595,6 +595,62 @@ ndfs_error_t ndfs_verify_integrity(const ndfs_filesystem_t *fs, bool *out_ok);
 ndfs_error_t ndfs_fsck(const ndfs_filesystem_t *fs, char **out_report,
                        int *out_errors);
 
+/** Result of a check: CLEAN (exit code 0), DAMAGED (1: only findings that lose no data, such as
+ *  orphan pages, a quota difference or a wrong checksum), FAILED (2: a pointer outside the device,
+ *  a block used by two owners, a used page marked free, an unreadable index, an unusable pointer). */
+typedef enum {
+    NDFS_FSCK_CLEAN   = 0,
+    NDFS_FSCK_DAMAGED = 1,
+    NDFS_FSCK_FAILED  = 2
+} ndfs_fsck_verdict_t;
+
+/** Options of ndfs_fsck_ex(). All false/NULL = the read only check. See docs/FSCK-FIX-PLAN.md. */
+typedef struct {
+    bool        verbose;      /**< orphan runs, both owners of every cross-link, quota table, machine lines */
+    bool        fix;          /**< repairs R1 to R4 (bit file, Extended Info checksum), and R5 with recover_orphans_user */
+    bool        dry_run;      /**< with fix: list the repairs, write nothing */
+    bool        force;        /**< with fix: the caller has stopped any emulator that has the image entered */
+    const char *recover_orphans_user; /**< R5: orphan runs that hold data become files ORPHAN-n:DATA of this user */
+} ndfs_fsck_options_t;
+
+/** One finding that belongs to a file or structure. */
+typedef struct {
+    char     path[96];        /**< USER/NAME:TYPE, "(object file)", "(user file)", "(bit file)" or "(image)" */
+    uint32_t page_in_file;    /**< page in the file, 0xFFFFFFFF = the index or sub-index block itself */
+    uint32_t block;           /**< the block concerned */
+    char     reason[160];
+} ndfs_fsck_failure_t;
+
+typedef struct {
+    char                *report;      /**< malloc'd text, ends with "IMAGE VERDICT: ..." */
+    int                  errors;
+    int                  warnings;
+    ndfs_fsck_verdict_t  verdict;     /**< of the last check (after the repairs, if any were done) */
+    ndfs_fsck_failure_t *failures;    /**< every FAILED finding; a file can appear more than once */
+    size_t               n_failures;
+    int                  repairs;     /**< repairs done, or listed in a dry run */
+    bool                 refused;     /**< fix asked for but not done (no force, or read only) */
+    uint8_t             *undo_data;   /**< bytes for --fsck-undo; NULL if nothing was written */
+    size_t               undo_size;
+} ndfs_fsck_result_t;
+
+/**
+ * Full check, with the hard verdict and, on request, the safe repairs.
+ * fs is written only when opts->fix is set and opts->dry_run and opts->force say so.
+ * Free the result with ndfs_fsck_result_free().
+ */
+ndfs_error_t ndfs_fsck_ex(ndfs_filesystem_t *fs, const ndfs_fsck_options_t *opts,
+                          ndfs_fsck_result_t *out);
+void ndfs_fsck_result_free(ndfs_fsck_result_t *r);
+
+/**
+ * Put back the pages saved by a repair (result->undo_data). The in-memory structures of fs are
+ * stale afterwards: write the image out and open it again.
+ * @param out_pages  Receives the number of pages restored (may be NULL).
+ */
+ndfs_error_t ndfs_fsck_undo(ndfs_filesystem_t *fs, const uint8_t *undo, size_t size,
+                            uint32_t *out_pages);
+
 /**
  * Generate a text report about the filesystem.
  * @param out_report  Receives a malloc'd null-terminated string.

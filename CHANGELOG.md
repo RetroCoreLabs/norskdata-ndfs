@@ -2,7 +2,15 @@
 
 All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndtool`).
 
-## Unreleased - 2026-10-20
+## Unreleased - 2026-10-21
+
+### Added - ndtool --fsck gives a verdict and can repair (ndfs-c, ndtool only)
+
+* `ndtool --fsck` ends with `IMAGE VERDICT: CLEAN`, `DAMAGED` or `FAILED` and names every failed file with the page and block; a block used twice names both files. The exit code is 0, 1 or 2 (it was 1 for any error); 3 means ndtool could not do what was asked. `-v` adds orphan runs, both owners of each cross-link, the quota table and one line per finding.
+* `--fix` (with `-f`; `-n` lists only) repairs a used page marked free (R1), a wrong Extended Info Block checksum (R3) and all-zero orphan pages (R4); `--recover-orphans USER` copies orphan pages that hold data into `USER/ORPHAN-n:DATA` (R5); `--salvage DIR` copies failed files out; `IMAGE.fsck-undo` is written first and `--fsck-undo` puts the pages back. Library: `ndfs_fsck_ex`, `ndfs_fsck_undo`. See `docs/FSCK-FIX-PLAN.md` for what was built and what was not (R2, R6).
+* The SCSI last page is decoded (`docs/CREATE-DIRECTORY-ORACLE.md`): the second half is a table of disk areas with a checksum word, and SINTRAN reads it at the last block of the emulator's fixed disk, not at the end of the image. Earlier text that said the image length must be 64656 pages was wrong.
+
+## 2026-10-20
 
 Everything here was measured with real SINTRAN M in the nd100x emulator and is written up in
 `docs/CREATE-DIRECTORY-ORACLE.md`, `docs/CREATE-DIRECTORY-PLACEMENT.md` and `docs/NDFS-ALLOCATION-RULES.md`.

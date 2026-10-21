@@ -748,6 +748,419 @@ static int test_fsck_spare_area_marked_used_is_info_not_orphan(void)
     return 0;
 }
 
+/* ---- Verdict, failed files, repairs, undo (docs/FSCK-FIX-PLAN.md) ---- */
+
+static void set_bitmap_bit(uint8_t *buf, const ndfs_master_block_t *mb, uint32_t block, int used)
+{
+    size_t byte_off;
+    uint8_t mask;
+    size_t abs_off;
+    raw_bitmap_bit_offset(block, &byte_off, &mask);
+    abs_off = (size_t)mb->bit_file_ptr.block_id * NDFS_PAGE_SIZE + byte_off;
+    if (used) buf[abs_off] |= mask; else buf[abs_off] &= (uint8_t)~mask;
+}
+
+static int bitmap_bit(const uint8_t *buf, const ndfs_master_block_t *mb, uint32_t block)
+{
+    size_t byte_off;
+    uint8_t mask;
+    raw_bitmap_bit_offset(block, &byte_off, &mask);
+    return (buf[(size_t)mb->bit_file_ptr.block_id * NDFS_PAGE_SIZE + byte_off] & mask) != 0;
+}
+
+static ndfs_filesystem_t *open_rw(const uint8_t *buf, size_t size)
+{
+    ndfs_filesystem_t *fs = NULL;
+    if (ndfs_open_buffer_copy(buf, size, false, &fs) != NDFS_OK) return NULL;
+    return fs;
+}
+
+/* An image with one file, a data page marked free (R1 case). Returns the data block. */
+static uint32_t make_free_ref(ndfs_filesystem_t **out_fs, uint8_t **out_buf, size_t *out_size)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_12MB, "FSCKFIX");
+    uint8_t *data = (uint8_t *)malloc(NDFS_PAGE_SIZE);
+    ndfs_object_entry_t entry;
+    const ndfs_master_block_t *mb = NULL;
+    uint32_t data_block;
+
+    fill_nonzero_pattern(data, NDFS_PAGE_SIZE, 8);
+    if (!fs || ndfs_write_file(fs, "SYSTEM/RFREE:DATA", data, NDFS_PAGE_SIZE) != NDFS_OK) { free(data); return 0; }
+    free(data);
+    ndfs_get_object_entry(fs, "RFREE:DATA", "SYSTEM", &entry);
+    ndfs_to_buffer(fs, out_buf, out_size);
+    data_block = ndfs_read_u32be(*out_buf, (size_t)entry.file_pointer.block_id * NDFS_PAGE_SIZE);
+    ndfs_get_master_block(fs, &mb);
+    set_bitmap_bit(*out_buf, mb, data_block, 0);
+    *out_fs = fs;
+    return data_block;
+}
+
+static int test_fsck_ex_verdict_levels(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_12MB, "FSCKVERD");
+    ndfs_filesystem_t *dirty = NULL;
+    const ndfs_master_block_t *mb = NULL;
+    ndfs_fsck_result_t r;
+    uint8_t *buf = NULL;
+    size_t size = 0;
+    uint32_t data_block;
+    ndfs_filesystem_t *free_fs = NULL;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_fsck_ex(fs, NULL, &r));
+    TEST_ASSERT_EQUAL(NDFS_FSCK_CLEAN, r.verdict);
+    TEST_ASSERT(strstr(r.report, "IMAGE VERDICT: CLEAN") != NULL);
+    TEST_ASSERT(strstr(r.report, "FAILED FILES") == NULL);
+    ndfs_fsck_result_free(&r);
+
+    /* an orphan: DAMAGED */
+    TEST_ASSERT_OK(ndfs_get_master_block(fs, &mb));
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &buf, &size));
+    set_bitmap_bit(buf, mb, NDFS_FIRST_ALLOC_BLOCK, 1);
+    dirty = open_rw(buf, size);
+    free(buf);
+    TEST_ASSERT_NOT_NULL(dirty);
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, NULL, &r));
+    TEST_ASSERT_EQUAL(NDFS_FSCK_DAMAGED, r.verdict);
+    TEST_ASSERT_EQUAL(0, r.errors);
+    TEST_ASSERT(strstr(r.report, "IMAGE VERDICT: DAMAGED") != NULL);
+    ndfs_fsck_result_free(&r);
+    ndfs_close(dirty);
+
+    /* a used page marked free: FAILED, with the file named */
+    data_block = make_free_ref(&free_fs, &buf, &size);
+    TEST_ASSERT(data_block != 0);
+    dirty = open_rw(buf, size);
+    free(buf);
+    TEST_ASSERT_NOT_NULL(dirty);
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, NULL, &r));
+    TEST_ASSERT_EQUAL(NDFS_FSCK_FAILED, r.verdict);
+    TEST_ASSERT(strstr(r.report, "IMAGE VERDICT: FAILED") != NULL);
+    TEST_ASSERT(strstr(r.report, "FAILED FILES: 1") != NULL);
+    TEST_ASSERT(strstr(r.report, "SYSTEM/RFREE:DATA") != NULL);
+    TEST_ASSERT_EQUAL(1, (int)r.n_failures);
+    TEST_ASSERT(strstr(r.failures[0].path, "RFREE:DATA") != NULL);
+    TEST_ASSERT_EQUAL(0, (int)r.failures[0].page_in_file);
+    TEST_ASSERT_EQUAL(data_block, r.failures[0].block);
+    ndfs_fsck_result_free(&r);
+
+    /* -v adds the one-line-per-finding form */
+    {
+        ndfs_fsck_options_t o;
+        memset(&o, 0, sizeof(o));
+        o.verbose = true;
+        TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+        TEST_ASSERT(strstr(r.report, "FAILED|SYSTEM/RFREE:DATA|0|") != NULL);
+        ndfs_fsck_result_free(&r);
+    }
+    ndfs_close(dirty);
+    ndfs_close(free_fs);
+    ndfs_close(fs);
+    return 0;
+}
+
+static int test_fsck_ex_cross_link_both_owners_and_fix_changes_nothing(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_12MB, "FSCKXOWN");
+    ndfs_filesystem_t *dirty = NULL;
+    uint8_t *da = (uint8_t *)malloc(NDFS_PAGE_SIZE), *db = (uint8_t *)malloc(NDFS_PAGE_SIZE);
+    ndfs_object_entry_t ea, eb;
+    ndfs_fsck_options_t o;
+    ndfs_fsck_result_t r;
+    uint8_t *buf = NULL, *after = NULL;
+    size_t size = 0, size2 = 0;
+    int found_a = 0, found_b = 0;
+    size_t i;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    fill_nonzero_pattern(da, NDFS_PAGE_SIZE, 1);
+    fill_nonzero_pattern(db, NDFS_PAGE_SIZE, 77);
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/XA:DATA", da, NDFS_PAGE_SIZE));
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/XB:DATA", db, NDFS_PAGE_SIZE));
+    free(da); free(db);
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "XA:DATA", "SYSTEM", &ea));
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "XB:DATA", "SYSTEM", &eb));
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &buf, &size));
+    /* A's slot 0 now points at B's data page. */
+    memcpy(buf + (size_t)ea.file_pointer.block_id * NDFS_PAGE_SIZE,
+           buf + (size_t)eb.file_pointer.block_id * NDFS_PAGE_SIZE, 4);
+    dirty = open_rw(buf, size);
+    TEST_ASSERT_NOT_NULL(dirty);
+
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, NULL, &r));
+    TEST_ASSERT_EQUAL(NDFS_FSCK_FAILED, r.verdict);
+    TEST_ASSERT(strstr(r.report, "FAILED FILES: 2") != NULL);
+    for (i = 0; i < r.n_failures; i++) {
+        if (strstr(r.failures[i].path, "XA:DATA") && strstr(r.failures[i].reason, "XB:DATA")) found_a = 1;
+        if (strstr(r.failures[i].path, "XB:DATA") && strstr(r.failures[i].reason, "XA:DATA")) found_b = 1;
+    }
+    TEST_ASSERT(found_a && found_b);
+    ndfs_fsck_result_free(&r);
+
+    /* --fix with force: nothing in a cross-link is safe to repair, the image stays as it is. */
+    memset(&o, 0, sizeof(o));
+    o.fix = true;
+    o.force = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT_EQUAL(0, r.repairs);
+    TEST_ASSERT_EQUAL(NDFS_FSCK_FAILED, r.verdict);
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &after, &size2));
+    TEST_ASSERT_EQUAL((int)size, (int)size2);
+    TEST_ASSERT(memcmp(buf, after, size) == 0);
+    free(buf); free(after);
+    ndfs_close(dirty);
+    ndfs_close(fs);
+    return 0;
+}
+
+static int test_fsck_ex_fix_r1_sets_bit_and_undo_restores(void)
+{
+    ndfs_filesystem_t *fs = NULL, *dirty = NULL;
+    uint8_t *buf = NULL, *fixed = NULL, *restored = NULL;
+    size_t size = 0, size2 = 0, size3 = 0;
+    const ndfs_master_block_t *mb = NULL;
+    uint32_t data_block, pages = 0;
+    ndfs_fsck_options_t o;
+    ndfs_fsck_result_t r;
+    uint8_t *undo;
+    size_t undo_size;
+    ndfs_filesystem_t *reopened = NULL;
+
+    data_block = make_free_ref(&fs, &buf, &size);
+    TEST_ASSERT(data_block != 0);
+    dirty = open_rw(buf, size);
+    TEST_ASSERT_NOT_NULL(dirty);
+
+    /* without force: refused, image untouched */
+    memset(&o, 0, sizeof(o));
+    o.fix = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT(r.refused);
+    TEST_ASSERT_EQUAL(0, r.repairs);
+    TEST_ASSERT(strstr(r.report, "-f") != NULL);
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &fixed, &size2));
+    TEST_ASSERT(memcmp(buf, fixed, size) == 0);
+    free(fixed);
+
+    /* dry run: lists R1, writes nothing */
+    o.dry_run = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT(strstr(r.report, "would R1 block") != NULL);
+    TEST_ASSERT_EQUAL(1, r.repairs);
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &fixed, &size2));
+    TEST_ASSERT(memcmp(buf, fixed, size) == 0);
+    free(fixed);
+
+    /* the repair: the bit is set, the second check is clean */
+    o.dry_run = false;
+    o.force = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT(!r.refused);
+    TEST_ASSERT_EQUAL(1, r.repairs);
+    TEST_ASSERT_EQUAL(NDFS_FSCK_CLEAN, r.verdict);
+    TEST_ASSERT(strstr(r.report, "Check after repair") != NULL);
+    TEST_ASSERT_NOT_NULL(r.undo_data);
+    undo_size = r.undo_size;
+    undo = (uint8_t *)malloc(undo_size);
+    memcpy(undo, r.undo_data, undo_size);
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &fixed, &size2));
+    TEST_ASSERT_OK(ndfs_get_master_block(dirty, &mb));
+    TEST_ASSERT(bitmap_bit(fixed, mb, data_block));
+    ndfs_close(dirty);
+
+    /* undo: write the saved pages back; the image is byte-identical to the start */
+    reopened = open_rw(fixed, size2);
+    TEST_ASSERT_NOT_NULL(reopened);
+    TEST_ASSERT_OK(ndfs_fsck_undo(reopened, undo, undo_size, &pages));
+    TEST_ASSERT(pages > 0);
+    TEST_ASSERT_OK(ndfs_to_buffer(reopened, &restored, &size3));
+    TEST_ASSERT_EQUAL((int)size, (int)size3);
+    TEST_ASSERT(memcmp(buf, restored, size) == 0);
+
+    free(undo); free(buf); free(fixed); free(restored);
+    ndfs_close(reopened);
+    ndfs_close(fs);
+    return 0;
+}
+
+static int test_fsck_ex_fix_orphans_zero_freed_data_kept_and_recovered(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_12MB, "FSCKORPF");
+    ndfs_filesystem_t *dirty = NULL;
+    const ndfs_master_block_t *mb = NULL;
+    ndfs_fsck_options_t o;
+    ndfs_fsck_result_t r;
+    uint8_t *buf = NULL, *after = NULL, *content = NULL;
+    size_t size = 0, size2 = 0, got = 0;
+    uint32_t zero_block = NDFS_FIRST_ALLOC_BLOCK, data_block = 20;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_get_master_block(fs, &mb));
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &buf, &size));
+    TEST_ASSERT(!bitmap_bit(buf, mb, zero_block));
+    TEST_ASSERT(!bitmap_bit(buf, mb, data_block));
+    /* block 7: used, all zero. Blocks 20 and 21: used, hold data. */
+    set_bitmap_bit(buf, mb, zero_block, 1);
+    set_bitmap_bit(buf, mb, data_block, 1);
+    set_bitmap_bit(buf, mb, data_block + 1, 1);
+    fill_nonzero_pattern(buf + (size_t)data_block * NDFS_PAGE_SIZE, NDFS_PAGE_SIZE, 5);
+    fill_nonzero_pattern(buf + (size_t)(data_block + 1) * NDFS_PAGE_SIZE, NDFS_PAGE_SIZE, 9);
+    dirty = open_rw(buf, size);
+    TEST_ASSERT_NOT_NULL(dirty);
+
+    /* fix without a user: the zero page is freed, the data pages stay */
+    memset(&o, 0, sizeof(o));
+    o.fix = true;
+    o.force = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT(strstr(r.report, "R4 block 7: bit cleared") != NULL);
+    TEST_ASSERT_EQUAL(NDFS_FSCK_DAMAGED, r.verdict);   /* the 2 data orphans are still there */
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &after, &size2));
+    TEST_ASSERT(!bitmap_bit(after, mb, zero_block));
+    TEST_ASSERT(bitmap_bit(after, mb, data_block));
+    TEST_ASSERT(memcmp(after + (size_t)data_block * NDFS_PAGE_SIZE,
+                       buf + (size_t)data_block * NDFS_PAGE_SIZE, 2 * NDFS_PAGE_SIZE) == 0);
+    free(after);
+
+    /* with a user: the two data pages become one file, content byte for byte */
+    o.recover_orphans_user = "SYSTEM";
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT(strstr(r.report, "R5 blocks 20..21 (2 pages): new file SYSTEM/ORPHAN-20:DATA") != NULL);
+    TEST_ASSERT_EQUAL(NDFS_FSCK_CLEAN, r.verdict);
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &after, &size2));
+    TEST_ASSERT(memcmp(after + (size_t)data_block * NDFS_PAGE_SIZE,
+                       buf + (size_t)data_block * NDFS_PAGE_SIZE, 2 * NDFS_PAGE_SIZE) == 0);
+    TEST_ASSERT_OK(ndfs_read_file(dirty, "SYSTEM/ORPHAN-20:DATA", &content, &got));
+    TEST_ASSERT_EQUAL(2 * NDFS_PAGE_SIZE, (int)got);
+    TEST_ASSERT(memcmp(content, buf + (size_t)data_block * NDFS_PAGE_SIZE, got) == 0);
+    ndfs_free_data(content);
+    free(after);
+    free(buf);
+    ndfs_close(dirty);
+    ndfs_close(fs);
+    return 0;
+}
+
+static int test_fsck_ex_extended_info_checksum_fixed(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_SMD_75MB, "FSCKEXT");
+    ndfs_filesystem_t *dirty = NULL;
+    ndfs_fsck_options_t o;
+    ndfs_fsck_result_t r;
+    uint8_t *buf = NULL, *after = NULL;
+    size_t size = 0, size2 = 0;
+    ndfs_master_block_t parsed;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_fsck_ex(fs, NULL, &r));
+    TEST_ASSERT_EQUAL(NDFS_FSCK_CLEAN, r.verdict);
+    ndfs_fsck_result_free(&r);
+
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &buf, &size));
+    buf[NDFS_EXTENDED_INFO_OFFSET + 1] ^= 0x01;     /* one bit wrong in the checksum word */
+    dirty = open_rw(buf, size);
+    TEST_ASSERT_NOT_NULL(dirty);
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, NULL, &r));
+    TEST_ASSERT_EQUAL(NDFS_FSCK_DAMAGED, r.verdict);
+    TEST_ASSERT(strstr(r.report, "Extended Info Block checksum") != NULL);
+    ndfs_fsck_result_free(&r);
+
+    memset(&o, 0, sizeof(o));
+    o.fix = true;
+    o.force = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT(strstr(r.report, "R3 Extended Info Block checksum") != NULL);
+    TEST_ASSERT_EQUAL(NDFS_FSCK_CLEAN, r.verdict);
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &after, &size2));
+    TEST_ASSERT_OK(ndfs_mb_parse(after, &parsed));
+    TEST_ASSERT_EQUAL(NDFS_CHECKSUM_VALID, parsed.checksum_state);
+    free(buf); free(after);
+    ndfs_close(dirty);
+    ndfs_close(fs);
+    return 0;
+}
+
+static int test_fsck_ex_incomplete_map_blocks_orphan_repairs(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_12MB, "FSCKINCOM");
+    ndfs_filesystem_t *dirty = NULL;
+    uint8_t *da = (uint8_t *)malloc(NDFS_PAGE_SIZE);
+    const ndfs_master_block_t *mb = NULL;
+    ndfs_object_entry_t e;
+    ndfs_fsck_options_t o;
+    ndfs_fsck_result_t r;
+    uint8_t *buf = NULL, *after = NULL;
+    size_t size = 0, size2 = 0;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    fill_nonzero_pattern(da, NDFS_PAGE_SIZE, 3);
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/OOB:DATA", da, NDFS_PAGE_SIZE));
+    free(da);
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "OOB:DATA", "SYSTEM", &e));
+    TEST_ASSERT_OK(ndfs_get_master_block(fs, &mb));
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &buf, &size));
+    /* slot 1 of the file's index points far outside the device; block 7 is an all-zero orphan */
+    buf[(size_t)e.file_pointer.block_id * NDFS_PAGE_SIZE + 4] = 0x00;
+    buf[(size_t)e.file_pointer.block_id * NDFS_PAGE_SIZE + 5] = 0x0F;
+    buf[(size_t)e.file_pointer.block_id * NDFS_PAGE_SIZE + 6] = 0xFF;
+    buf[(size_t)e.file_pointer.block_id * NDFS_PAGE_SIZE + 7] = 0xFF;
+    set_bitmap_bit(buf, mb, NDFS_FIRST_ALLOC_BLOCK, 1);
+    dirty = open_rw(buf, size);
+    TEST_ASSERT_NOT_NULL(dirty);
+
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, NULL, &r));
+    TEST_ASSERT_EQUAL(NDFS_FSCK_FAILED, r.verdict);
+    TEST_ASSERT(strstr(r.report, "outside the device") != NULL);
+    TEST_ASSERT(strstr(r.report, "SYSTEM/OOB:DATA") != NULL);
+    ndfs_fsck_result_free(&r);
+
+    memset(&o, 0, sizeof(o));
+    o.fix = true;
+    o.force = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT(strstr(r.report, "reference map is incomplete") != NULL);
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &after, &size2));
+    TEST_ASSERT(bitmap_bit(after, mb, NDFS_FIRST_ALLOC_BLOCK));   /* the orphan bit was NOT cleared */
+    free(buf); free(after);
+    ndfs_close(dirty);
+    ndfs_close(fs);
+    return 0;
+}
+
+static int test_fsck_ex_read_only_handle_refuses_fix(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_12MB, "FSCKRO");
+    ndfs_filesystem_t *ro = NULL;
+    uint8_t *buf = NULL;
+    size_t size = 0;
+    ndfs_fsck_options_t o;
+    ndfs_fsck_result_t r;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &buf, &size));
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(buf, size, true, &ro));
+    free(buf);
+    memset(&o, 0, sizeof(o));
+    o.fix = true;
+    o.force = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(ro, &o, &r));
+    TEST_ASSERT(r.refused);
+    TEST_ASSERT_EQUAL(0, r.repairs);
+    ndfs_fsck_result_free(&r);
+    ndfs_close(ro);
+    ndfs_close(fs);
+    return 0;
+}
+
 void run_fsck_tests(void)
 {
     TEST_SUITE_BEGIN("fsck Reference-Walk Tests");
@@ -765,4 +1178,11 @@ void run_fsck_tests(void)
     RUN_TEST(test_fsck_detects_quota_mismatch);
     RUN_TEST(test_fsck_mixed_workload_is_clean);
     RUN_TEST(test_fsck_spare_area_marked_used_is_info_not_orphan);
+    RUN_TEST(test_fsck_ex_verdict_levels);
+    RUN_TEST(test_fsck_ex_cross_link_both_owners_and_fix_changes_nothing);
+    RUN_TEST(test_fsck_ex_fix_r1_sets_bit_and_undo_restores);
+    RUN_TEST(test_fsck_ex_fix_orphans_zero_freed_data_kept_and_recovered);
+    RUN_TEST(test_fsck_ex_extended_info_checksum_fixed);
+    RUN_TEST(test_fsck_ex_incomplete_map_blocks_orphan_repairs);
+    RUN_TEST(test_fsck_ex_read_only_handle_refuses_fix);
 }

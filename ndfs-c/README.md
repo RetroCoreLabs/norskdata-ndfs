@@ -195,7 +195,9 @@ for the backend contract and a worked example.
 | Function | Description |
 |----------|-------------|
 | `ndfs_verify_integrity(fs, &ok)` | Basic integrity check |
-| `ndfs_fsck(fs, &report, &errors)` | Full 5-phase filesystem check |
+| `ndfs_fsck(fs, &report, &errors)` | Full 5-phase filesystem check (read only) |
+| `ndfs_fsck_ex(fs, &options, &result)` | The same with the verdict (CLEAN, DAMAGED, FAILED), the failed files, and on request the safe repairs R1, R3, R4, R5 with undo data |
+| `ndfs_fsck_undo(fs, data, size, &pages)` | Put back the pages a repair saved |
 | `ndfs_generate_report(fs, &report)` | Text report |
 | `ndfs_strerror(err)` | Error code to string |
 
@@ -226,6 +228,7 @@ All functions that allocate output must be freed by the caller:
 | `ndfs_get_object_entries` | `ndfs_free_object_entries(entries)` |
 | `ndfs_generate_report` | `ndfs_free_string(report)` |
 | `ndfs_fsck` | `ndfs_free_string(report)` |
+| `ndfs_fsck_ex` | `ndfs_fsck_result_free(&result)` |
 | `ndfs_load_boot_code` | `ndfs_boot_code_destroy(&code)` |
 
 All free functions are no-ops when passed NULL.

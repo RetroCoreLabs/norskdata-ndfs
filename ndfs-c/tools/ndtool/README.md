@@ -89,7 +89,9 @@ FRIENDS (a user grants another user rights to its files):
     R read  W write  A append  C common  D directory  (default RWA)
 
 DIAGNOSTICS:
-  ndtool --fsck <image>                      Full filesystem check
+  ndtool --fsck [-v] [--fix [-n] [-f] [--recover-orphans USER]] [--salvage DIR] <image>
+                                             Full filesystem check, verdict, safe repairs
+  ndtool --fsck-undo <image>                 Put back the pages saved by the last --fix
 
 CREATE:
   ndtool --create floppy360 --name MYDISK new.ndfs
@@ -529,6 +531,45 @@ Phase 5: File structure validation
 Found 2 error(s) and 11 warning(s).
 ```
 
+The verdict is always the last thing in the report (here from a small image where one page of RAND:DATA was pointed at HELLO:TEXT by hand):
+
+```
+IMAGE VERDICT: FAILED
+FAILED FILES: 2
+  SYSTEM/RAND:DATA  (data page 0, block 259): block 259 is also used by SYSTEM/HELLO:TEXT
+  SYSTEM/HELLO:TEXT  (data page 0, block 259): block 259 is also used by SYSTEM/RAND:DATA
+```
+
+The exit code of `ndtool --fsck` is the verdict, so a script can stop on it:
+
+| Verdict | Exit code | When |
+|---|---|---|
+| CLEAN | 0 | no errors, no warnings |
+| DAMAGED | 1 | only warnings that lose no data: orphan pages, a quota difference, a wrong Extended Info Block checksum |
+| FAILED | 2 | a pointer outside the device, a block used by two files, a used page marked free in the bit file, an index block that cannot be read, a file pointer that cannot be used, an invalid master block pointer |
+| (tool error) | 3 | ndtool could not do what was asked (cannot write the undo file, repair refused, ...) |
+
+A FAILED image lists every file with its first reason and the page inside the file. A block used twice names BOTH files: fsck cannot tell which one holds the right bytes. With `-v` the report also has the orphan runs, both owners of every cross-link with their page positions, a table of each user's reserved, stored and counted pages, the files with 0 bytes, and one line per finding for scripts: `FAILED|USER/NAME:TYPE|page-in-file|block|reason`.
+
+### Repairs (`--fix`)
+
+`--fix` does only what follows from the bytes on the disk and cannot lose data. It writes nothing unless `-f` is given (stop the emulator first: ndtool cannot see whether SINTRAN has the directory entered). `-n` lists the repairs and writes nothing.
+
+| Rule | Finding | Repair |
+|---|---|---|
+| R1 | a page used by a file or structure, marked free in the bit file | set the bit |
+| R3 | Extended Info Block checksum wrong | recompute and store it (SINTRAN rebuilds it on enter) |
+| R4 | orphan page (marked used, no owner) with all 2048 bytes zero | clear the bit |
+| R5 | orphan pages that hold data | never freed; with `--recover-orphans USER` each run of consecutive pages becomes a contiguous file `USER/ORPHAN-n:DATA` (n = first block); the pages stay where they are |
+
+R4 and R5 run only when the reference map is complete (no pointer outside the device, no unreadable index block, no master block error): a page that looks unreferenced may belong to a structure that could not be followed. A cross-link is never repaired. After the repairs fsck checks again, and the verdict and exit code are those of the second check.
+
+Before the image is changed, `IMAGE.fsck-undo` is written next to it: the old bytes of every page the repair touched. `ndtool --fsck-undo IMAGE` puts them back (the result is byte for byte the image before `--fix`).
+
+`--salvage DIR` copies every file named in the findings out of the image into DIR and writes `SALVAGE-REPORT.txt` with every finding, so the shared pages are named. The image is not changed.
+
+Not done (see `docs/FSCK-FIX-PLAN.md`): R6 (recompute `pages_used`), which waits for the emulator experiments of that plan, and R2 (set the bits of blocks 0 to 6): a directory made by SINTRAN M's CREATE-DIRECTORY left blocks 1 to 6 clear in the one run that was checked, so fsck only prints an INFO line for it.
+
 The check performs:
 - **Phase 1**: Master block structure validation
 - **Phase 2**: Walk all file pointers and build a reference count per block
@@ -564,7 +605,7 @@ Every size `ndtool --create` can make:
 1. **Floppy:** `floppy360` (154 pages, 315 KB) and `floppy12` (616 pages, 1.2 MB). Floppies carry no Extended Info Block.
 2. **Hard disk templates measured on real disks:** `smd75` (38,400 pages), `winchester74` (36,864 pages) and `scsi126` (64,656 pages).
 3. **Any size you choose:** `custom --pages N` (at least 32 pages; images of 1000 pages or less get no Extended Info Block and no boot code).
-   SCSI is the exception: SINTRAN needs the exact 64,656 page size with its real last page, so only `scsi126` works for SCSI.
+   SCSI is the exception: only `scsi126` (64,656 pages) is made, with the SINTRAN disk area table in its last page. Other SCSI sizes are not tested.
 4. **A SINTRAN disk type by name:** the table below. Dir pages is the directory size SINTRAN gives the type (its declared capacity).
    Image pages is the length of the file `ndtool` writes. Where the SINTRAN disk layout is known this is the full layout
    (cylinders x heads x sectors x 1024 bytes); the emulator's SMD and Winchester controllers pick their geometry from the file
@@ -648,7 +689,7 @@ by SINTRAN's free-page search. Options:
 | `--boot-file F` | use the file F (at most 2000 bytes) as the boot area |
 
 The boot areas are copies of real disks. Not verified: nobody has booted an image made this way. The `scsi126` image also carries the real last page, which SINTRAN requires
-(an all-zero last page, or a different length, makes SINTRAN fail with a disk transfer error); what that page contains is not decoded, so only the 64,656 page SCSI size can be made.
+(an all-zero last page makes SINTRAN fail with a disk transfer error). That page holds the disk area table (layout in `docs/CREATE-DIRECTORY-ORACLE.md`); only the 64,656 page SCSI size is made, other sizes are not tested.
 
 Custom size example:
 

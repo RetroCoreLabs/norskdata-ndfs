@@ -51,6 +51,10 @@ static struct option long_options[] = {
     {"create",    required_argument, 0, 'C'},
     {"shell",     no_argument,       0, 'S'},
     {"fsck",      no_argument,       0, 1005},
+    {"fix",       no_argument,       0, 1030},
+    {"recover-orphans", required_argument, 0, 1031},
+    {"salvage",   required_argument, 0, 1032},
+    {"fsck-undo", no_argument,       0, 1033},
     {"editor",    required_argument, 0, 1006},
     {"xat",       no_argument,       0, 1007},
     {"dest",      required_argument, 0, 1008},
@@ -84,6 +88,10 @@ int main(int argc, char **argv)
     int mode_users = 0;
     int mode_shell = 0;
     int mode_fsck = 0;
+    int fsck_fix = 0;
+    int fsck_undo = 0;
+    const char *fsck_recover_user = NULL;
+    const char *fsck_salvage_dir = NULL;
 
     /* Write operation args */
     const char *put_local = NULL;
@@ -153,6 +161,10 @@ int main(int argc, char **argv)
         case 'C': create_template = optarg; needs_write = 1; break;
         case 'S': mode_shell = 1; needs_write = 1; break;
         case 1005: mode_fsck = 1; break;
+        case 1030: fsck_fix = 1; mode_fsck = 1; break;
+        case 1031: fsck_recover_user = optarg; fsck_fix = 1; mode_fsck = 1; break;
+        case 1032: fsck_salvage_dir = optarg; mode_fsck = 1; break;
+        case 1033: fsck_undo = 1; needs_write = 1; break;
         case 1006: ctx.editor = optarg; break;
         case 1007: ctx.use_xat = true; break;
         case 1008: ctx.dest_user = optarg; break;
@@ -232,6 +244,9 @@ int main(int argc, char **argv)
         return ret;
     }
 
+    /* --fix writes the image unless -n: open it for writing. */
+    if (mode_fsck && fsck_fix && !ctx.dry_run) needs_write = 1;
+
     /* Read the image file */
     {
         size_t img_size = 0;
@@ -272,17 +287,11 @@ int main(int argc, char **argv)
     /* Dispatch command */
     if (mode_shell) {
         ret = cmd_shell(&ctx);
+    } else if (fsck_undo) {
+        ret = cmd_fsck_undo(&ctx);
     } else if (mode_fsck) {
-        char *report = NULL;
-        int errs = 0;
-        ndfs_error_t ferr = ndfs_fsck(ctx.fs, &report, &errs);
-        if (ferr == NDFS_OK && report) {
-            printf("%s", report);
-            ndfs_free_string(report);
-        } else {
-            fprintf(stderr, "Error running fsck: %s\n", ndfs_strerror(ferr));
-        }
-        ret = (errs > 0) ? 1 : 0;
+        /* Exit code: 0 CLEAN, 1 DAMAGED, 2 FAILED, 3 ndtool could not do what was asked. */
+        ret = cmd_fsck(&ctx, fsck_fix != 0, fsck_recover_user, fsck_salvage_dir);
     } else if (mode_info) {
         ret = cmd_info(&ctx);
     } else if (mode_list) {
@@ -377,7 +386,20 @@ static void print_usage(const char *prog)
     printf("  --frienddel OWNER:FRIEND          Remove a friend\n");
     printf("                  OWNER/FRIEND may be a user name or index (0-255).\n");
     printf("                  Rights: R read W write A append C common D directory\n");
-    printf("  --fsck          Full filesystem check\n");
+    printf("  --fsck          Full filesystem check. The last lines are IMAGE VERDICT: CLEAN, DAMAGED or\n");
+    printf("                  FAILED, with every failed file and why. Exit code 0 CLEAN, 1 DAMAGED, 2 FAILED,\n");
+    printf("                  3 ndtool could not do what was asked. -v adds orphan runs, both owners of every\n");
+    printf("                  cross-link, the quota table and one line per finding (FAILED|file|page|block|reason).\n");
+    printf("  --fix           With --fsck: do the safe repairs and check again. Set a bit for a page that a\n");
+    printf("                  file uses but the bit file calls free (R1); clear the bit of an orphan page that\n");
+    printf("                  is all zero (R4); recompute a wrong Extended Info Block checksum (R3). Orphan\n");
+    printf("                  pages with data are never freed. Stop the emulator first and add -f. -n lists\n");
+    printf("                  the repairs and writes nothing. IMAGE.fsck-undo is written before the image.\n");
+    printf("  --recover-orphans USER  With --fsck --fix: runs of orphan pages that hold data become files\n");
+    printf("                  USER/ORPHAN-n:DATA (n = first block). The pages stay where they are.\n");
+    printf("  --salvage DIR   With --fsck: copy every failed file to DIR and write SALVAGE-REPORT.txt\n");
+    printf("                  naming the shared pages. The image is not changed.\n");
+    printf("  --fsck-undo     Put back the pages saved in IMAGE.fsck-undo by the last --fix.\n");
     printf("  --stat PATH     Show detailed file metadata (add -v for block list)\n");
     printf("  --chmod SPEC PATH   Change a file's access permissions\n");
     printf("  --create TEMPLATE  Create new image\n");
@@ -422,8 +444,9 @@ static void print_usage(const char *prog)
     printf("                  pages and MB, controller family, drive model and test status.\n");
     printf("  -R -F -E -N     End of a SMD name: formats of one size (R removable, F fixed, E EMD drive,\n");
     printf("                  N NEC drive) with different heads/sectors, so different image lengths.\n");
-    printf("  SCSI            Only scsi126 (64656 pages): the last page is not decoded, so no other\n");
-    printf("                  SCSI size can be made. Floppies: floppy360 and floppy12 only (or custom).\n");
+    printf("  SCSI            Only scsi126 (64656 pages) is made. Its last page holds the SINTRAN disk\n");
+    printf("                  area table; other SCSI sizes are not tested. Floppies: floppy360 and\n");
+    printf("                  floppy12 only (or custom).\n");
     printf("\n  --pages N       Page count for custom template\n");
     printf("  --bit-file A    SINTRAN's bit file address prompt: 0 = default (9*floor(floor(size/2)/9)),\n");
     printf("                  -1 = end of disc, anything else = an OCTAL page address\n");
