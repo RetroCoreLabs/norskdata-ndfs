@@ -51,6 +51,7 @@ static void shell_help(void)
     printf("  quotaadd NAME PAGES          Add pages to user quota\n");
     printf("  quotadel NAME PAGES          Remove pages from user quota\n");
     printf("  passwd NAME                  Clear user password\n");
+    printf("  release                      Clear the directory-entered flag and system number\n");
     printf("  friends USER                 List a user's friends and their rights\n");
     printf("  friendadd OWNER FRIEND [R]   Add friend (R = rights, default RWA)\n");
     printf("  frienddel OWNER FRIEND       Remove a friend\n");
@@ -641,6 +642,9 @@ int cmd_shell(ndtool_ctx_t *ctx)
                 } else {
                     cmd_passwd(ctx, arg1);
                 }
+            }
+            else if (strcmp(cmd, "release") == 0) {
+                cmd_release(ctx);
             }
             else if (strcmp(cmd, "save") == 0) {
                 if (arg1) ctx->image_path = arg1;

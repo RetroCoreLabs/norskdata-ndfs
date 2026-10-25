@@ -207,6 +207,47 @@ int cmd_passwd(ndtool_ctx_t *ctx, const char *name)
     return 0;
 }
 
+/* --release: clear the "directory entered" flag and the system number that SINTRAN left in
+ * the Extended Info Block when the emulator stopped without releasing the directory. The
+ * boot then no longer prints DIRECTORY ENTERED BY ANOTHER SYSTEM. Stop the emulator first:
+ * ndtool cannot see whether SINTRAN has the directory entered right now. */
+int cmd_release(ndtool_ctx_t *ctx)
+{
+    ndfs_error_t err;
+    bool entered = false;
+    uint16_t sys = 0;
+    const ndfs_master_block_t *mb = NULL;
+
+    if (ndfs_get_master_block(ctx->fs, &mb) != NDFS_OK || !mb) {
+        fprintf(stderr, "Error reading the master block\n");
+        return -1;
+    }
+    entered = (mb->ext_flag_word & NDFS_EXT_FLAG_ENTERED) != 0;
+    sys = mb->ext_last_system_number;
+
+    if (!entered && sys == 0) {
+        printf("Directory is not marked entered and has no system number: nothing to do\n");
+        ctx->modified = false;
+        return 0;
+    }
+    if (ctx->dry_run) {
+        printf("Would release the directory: entered=%s, system number %o (octal) [dry run]\n",
+               entered ? "yes" : "no", (unsigned)sys);
+        return 0;
+    }
+
+    err = ndfs_release_directory(ctx->fs, NULL, NULL);
+    if (err != NDFS_OK) {
+        fprintf(stderr, "Error releasing the directory: %s\n", ndfs_strerror(err));
+        return -1;
+    }
+    if (ndtool_save_image(ctx) != 0) return -1;
+
+    printf("Directory released: entered flag cleared, system number %o (octal) -> 0\n", (unsigned)sys);
+    ctx->modified = false;
+    return 0;
+}
+
 /* ── Friends ──────────────────────────────────────────────────────────
  * Friend commands take colon-packed args so each maps to one CLI option:
  *   --friendadd OWNER:FRIEND[:RWACD]   --frienddel OWNER:FRIEND

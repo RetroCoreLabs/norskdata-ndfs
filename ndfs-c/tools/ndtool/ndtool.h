@@ -93,6 +93,7 @@ int cmd_giveobjblocks(ndtool_ctx_t *ctx, const char *name, uint32_t count);
 int cmd_takeobjblocks(ndtool_ctx_t *ctx, const char *name, uint32_t count);
 int cmd_remquota(ndtool_ctx_t *ctx, const char *name, uint32_t pages);
 int cmd_passwd(ndtool_ctx_t *ctx, const char *name);
+int cmd_release(ndtool_ctx_t *ctx);
 /* Friend commands. add/del take "OWNER:FRIEND[:RWACD]" / "OWNER:FRIEND";
  * list takes a user name or index. */
 int cmd_friend_add(ndtool_ctx_t *ctx, const char *arg);

@@ -294,6 +294,15 @@ ndfs_error_t ndfs_clear_user_password(ndfs_filesystem_t *fs, const char *name);
 ndfs_error_t ndfs_clear_user_password_by_index(ndfs_filesystem_t *fs,
                                                uint8_t index);
 
+/** Release a directory that was left entered: clear bit 15 of the Extended Info Block
+ *  flag word (NDFS_EXT_FLAG_ENTERED) and the last system number, then store a fresh
+ *  checksum. Bits 0-14 of the flag word are kept. This is what SINTRAN's own release
+ *  does (REENB, BSET ZRO 170). Only call it when no emulator or SINTRAN has the image
+ *  entered. Returns NDFS_OK also when nothing was set; *was_entered, *was_system
+ *  (either may be NULL) report what was found before the change. */
+ndfs_error_t ndfs_release_directory(ndfs_filesystem_t *fs, bool *was_entered,
+                                    uint16_t *was_system);
+
 /* ── Friends ─────────────────────────────────────────────────────────
  *
  * A user has 0..NDFS_MAX_FRIENDS friends, stored in that user's own entry.

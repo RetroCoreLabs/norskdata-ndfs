@@ -680,6 +680,85 @@ static int test_directory_name_uppercased(void)
     return 0;
 }
 
+/* ndfs_release_directory(): an image left entered (flag bit 15 set, a system number stored) is
+ * released: bit 15 and the system number are cleared, bits 0-14 of the flag word are kept, the
+ * Extended Info Block checksum is valid, nothing else on page 0 changes, and the result survives
+ * export and reopen. */
+static int test_release_directory(void)
+{
+    ndfs_filesystem_t *fs = NULL, *fs2 = NULL;
+    ndfs_image_options_t opts;
+    const ndfs_master_block_t *mb = NULL;
+    uint8_t *before = NULL, *after = NULL;
+    size_t before_size = 0, after_size = 0, i, diff = 0;
+    bool was_entered = false;
+    uint16_t was_system = 0;
+
+    ndfs_image_options_init(&opts);
+    opts.template_type = NDFS_TMPL_SMD_75MB;
+    strcpy(opts.directory_name, "RELEASE");
+    opts.include_extended_info = true;
+    opts.system_number = 0144;
+    opts.flag_word = (uint16_t)(NDFS_EXT_FLAG_ENTERED | 0x0123);
+
+    TEST_ASSERT_OK(ndfs_create_image(&fs, &opts));
+    TEST_ASSERT_OK(ndfs_get_master_block(fs, &mb));
+    TEST_ASSERT_EQUAL(NDFS_EXT_FLAG_ENTERED | 0x0123, mb->ext_flag_word);
+    TEST_ASSERT_EQUAL(0144, mb->ext_last_system_number);
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &before, &before_size));
+
+    TEST_ASSERT_OK(ndfs_release_directory(fs, &was_entered, &was_system));
+    TEST_ASSERT(was_entered);
+    TEST_ASSERT_EQUAL(0144, was_system);
+
+    TEST_ASSERT_OK(ndfs_get_master_block(fs, &mb));
+    TEST_ASSERT_EQUAL(0x0123, mb->ext_flag_word);
+    TEST_ASSERT_EQUAL(0, mb->ext_last_system_number);
+
+    /* Exported bytes: only the Extended Info Block (checksum, flag word, system number) changed. */
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &after, &after_size));
+    TEST_ASSERT_EQUAL(before_size, after_size);
+    for (i = 0; i < before_size; i++) {
+        if (before[i] != after[i]) {
+            diff++;
+            TEST_ASSERT(i >= NDFS_EXTENDED_INFO_OFFSET && i < NDFS_EXTENDED_INFO_OFFSET + 16);
+        }
+    }
+    TEST_ASSERT(diff > 0);
+
+    /* Reopen from the exported bytes: flag cleared and the checksum is valid. */
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(after, after_size, false, &fs2));
+    TEST_ASSERT_OK(ndfs_get_master_block(fs2, &mb));
+    TEST_ASSERT_EQUAL(0x0123, mb->ext_flag_word);
+    TEST_ASSERT_EQUAL(0, mb->ext_last_system_number);
+    TEST_ASSERT_EQUAL(NDFS_CHECKSUM_VALID, mb->checksum_state);
+
+    /* A second release finds nothing set and changes no byte. */
+    TEST_ASSERT_OK(ndfs_release_directory(fs2, &was_entered, &was_system));
+    TEST_ASSERT(!was_entered);
+    TEST_ASSERT_EQUAL(0, was_system);
+    {
+        uint8_t *again = NULL;
+        size_t again_size = 0;
+        TEST_ASSERT_OK(ndfs_to_buffer(fs2, &again, &again_size));
+        TEST_ASSERT_EQUAL(after_size, again_size);
+        TEST_ASSERT(memcmp(after, again, after_size) == 0);
+        free(again);
+    }
+    ndfs_close(fs2);
+
+    /* A read-only image is refused. */
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(before, before_size, true, &fs2));
+    TEST_ASSERT_EQUAL(NDFS_ERR_READ_ONLY, ndfs_release_directory(fs2, NULL, NULL));
+    TEST_ASSERT_EQUAL(NDFS_ERR_NULL_PTR, ndfs_release_directory(NULL, NULL, NULL));
+    ndfs_close(fs2);
+
+    free(before);
+    free(after);
+    ndfs_close(fs);
+    return 0;
+}
+
 void run_image_creator_tests(void)
 {
     TEST_SUITE_BEGIN("Image Creator Tests");
@@ -705,4 +784,5 @@ void run_image_creator_tests(void)
     RUN_TEST(test_write_to_created_image);
     RUN_TEST(test_create_and_export);
     RUN_TEST(test_directory_name_uppercased);
+    RUN_TEST(test_release_directory);
 }

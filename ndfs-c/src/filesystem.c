@@ -3056,6 +3056,31 @@ ndfs_error_t ndfs_clear_user_password(ndfs_filesystem_t *fs, const char *name)
     return commit_writes(fs, write_user_page(fs, fs->users[slot].user_index));
 }
 
+ndfs_error_t ndfs_release_directory(ndfs_filesystem_t *fs, bool *was_entered,
+                                    uint16_t *was_system)
+{
+    uint8_t *page0;
+
+    if (!fs) return NDFS_ERR_NULL_PTR;
+    if (fs->read_only) return NDFS_ERR_READ_ONLY;
+
+    if (was_entered) *was_entered = (fs->master_block.ext_flag_word & NDFS_EXT_FLAG_ENTERED) != 0;
+    if (was_system) *was_system = fs->master_block.ext_last_system_number;
+
+    fs->master_block.ext_flag_word = (uint16_t)(fs->master_block.ext_flag_word & ~NDFS_EXT_FLAG_ENTERED);
+    fs->master_block.ext_last_system_number = 0;
+
+    page0 = write_page_ptr(fs, 0);
+    if (!page0) return NDFS_ERR_IO;
+    /* ndfs_mb_write_extended() stores a freshly computed checksum with the fields. */
+    ndfs_mb_write_extended(&fs->master_block, page0);
+    fs->master_block.ext_checksum = fs->master_block.ext_calculated_checksum =
+        (uint16_t)((page0[NDFS_EXTENDED_INFO_OFFSET] << 8) | page0[NDFS_EXTENDED_INFO_OFFSET + 1]);
+    fs->master_block.checksum_state = NDFS_CHECKSUM_VALID;
+
+    return commit_writes(fs, NDFS_OK);
+}
+
 ndfs_error_t ndfs_clear_user_password_by_index(ndfs_filesystem_t *fs,
                                                uint8_t index)
 {

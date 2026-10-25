@@ -75,6 +75,10 @@ USERS:
   ndtool --quotadel SYSTEM 100 <image>       Remove 100 pages from quota
   ndtool --passwd SYSTEM <image>             Clear user password
 
+DIRECTORY ENTERED FLAG:
+  ndtool --release <image>                   Clear the "entered" flag + system number
+  ndtool -n --release <image>                Preview, write nothing
+
 OBJECT BLOCKS (how many FILES a user may hold - not how much space):
   ndtool --objblocks BIGMAN <image>          Show blocks, files held, room to grant
   ndtool --giveobjblocks BIGMAN 3 <image>    Give 3 more blocks (256 -> 1024 files)
@@ -415,6 +419,24 @@ See `docs/NDFS-OBJECT-BLOCKS-SPEC.md` for the on-disk layout and how it was veri
 ```
 $ ndtool --passwd SYSTEM disk.ndfs
 Password cleared for 'SYSTEM'
+
+### Release a Directory
+
+SINTRAN sets bit 15 of the Extended Info Block flag word and stores its system number when it
+enters a directory, and clears both on release. An emulator that stops without releasing leaves
+them set, and the next boot prints `DIRECTORY ENTERED BY ANOTHER SYSTEM`. `--release` clears bit 15
+and the system number and stores a fresh checksum. Bits 0-14 of the flag word are kept, and no
+other byte of the image changes.
+
+```
+$ ndtool --release disk.ndfs
+Directory released: entered flag cleared, system number 144 (octal) -> 0
+$ ndtool --release disk.ndfs
+Directory is not marked entered and has no system number: nothing to do
+```
+
+Stop the emulator first: ndtool cannot see whether SINTRAN has the directory entered right now.
+`-n` prints what would change and writes nothing. In the shell the command is `release`.
 ```
 
 ## Friends
@@ -786,6 +808,7 @@ Two kinds of path appear below:
 | `quotaadd NAME PAGES` | Add pages to user quota |
 | `quotadel NAME PAGES` | Remove pages from quota |
 | `passwd NAME` | Clear user password |
+| `release` | Clear the directory-entered flag and system number |
 | `friends USER` | List a user's friends and their rights |
 | `friendadd OWNER FRIEND [RWACD]` | Add a friend (default rights RWA) |
 | `frienddel OWNER FRIEND` | Remove a friend |
@@ -879,6 +902,7 @@ ndtool is inspired by [Tor Arntsen's ndfs tool](https://www.ndwiki.org/wiki/User
 | Object blocks (files per user) | No | Yes (`--objblocks`, `--giveobjblocks`, `--takeobjblocks`) |
 | Friend management | No | Yes (`--friends`, `--friendadd`, `--frienddel`) |
 | Password clearing | No | Yes (`--passwd`) |
+| Release an entered directory | No | Yes (`--release`) |
 | Image creation | No | Yes (`--create`) |
 | Interactive shell | No | Yes (`--shell`) |
 | Even parity (correct) | Strip only | Strip and set |

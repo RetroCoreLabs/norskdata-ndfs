@@ -48,6 +48,7 @@ static struct option long_options[] = {
     {"frienddel", required_argument, 0, 1014},
     {"friends",    required_argument, 0, 1015},
     {"passwd",    required_argument, 0, 'W'},
+    {"release",   no_argument,       0, 1040},
     {"create",    required_argument, 0, 'C'},
     {"shell",     no_argument,       0, 'S'},
     {"fsck",      no_argument,       0, 1005},
@@ -107,6 +108,7 @@ int main(int argc, char **argv)
     const char *remquota_name = NULL;
     uint32_t quota_pages = 0;
     const char *passwd_name = NULL;
+    int do_release = 0;
     const char *friend_add_arg = NULL;
     const char *friend_del_arg = NULL;
     const char *friends_arg = NULL;
@@ -155,6 +157,7 @@ int main(int argc, char **argv)
         case 1018: takeobjblocks_name = optarg; needs_write = 1; break;
         case 1004: remquota_name = optarg; needs_write = 1; break;
         case 'W': passwd_name = optarg; needs_write = 1; break;
+        case 1040: do_release = 1; needs_write = 1; break;
         case 1013: friend_add_arg = optarg; needs_write = 1; break;
         case 1014: friend_del_arg = optarg; needs_write = 1; break;
         case 1015: friends_arg = optarg; break;
@@ -338,6 +341,8 @@ int main(int argc, char **argv)
                                 objblock_count > 0 ? objblock_count : 1);
     } else if (passwd_name) {
         ret = cmd_passwd(&ctx, passwd_name);
+    } else if (do_release) {
+        ret = cmd_release(&ctx);
     } else if (friend_add_arg) {
         ret = cmd_friend_add(&ctx, friend_add_arg);
     } else if (friend_del_arg) {
@@ -375,6 +380,8 @@ static void print_usage(const char *prog)
     printf("  --quotaadd NAME PAGES   Add pages to user quota (checks disk space)\n");
     printf("  --quotadel NAME PAGES   Remove pages from user quota (checks usage)\n");
     printf("  --passwd NAME            Clear user password\n");
+    printf("  --release                Clear the \"directory entered\" flag and the system number\n");
+    printf("                           (stop the emulator first; -n previews)\n");
     printf("  --objblocks NAME         Show object blocks and file count for a user\n");
     printf("  --giveobjblocks NAME N   Give N more object blocks (256 files each, max 16)\n");
     printf("                           The @GIVE-OBJECT-BLOCKS equivalent. Raises the\n");
