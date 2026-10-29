@@ -45,7 +45,7 @@ static void shell_help(void)
     printf("  info                         Filesystem info\n");
     printf("  bitmap                       Bitmap visualization and validation\n");
     printf("  fsck                         Full filesystem check\n");
-    printf("  users                        List users with quota info\n");
+    printf("  users                        List users with quota info and password word (octal)\n");
     printf("  useradd NAME [QUOTA]         Add user (default quota: 100)\n");
     printf("  userdel NAME                 Remove user (must have no files)\n");
     printf("  quotaadd NAME PAGES          Add pages to user quota\n");

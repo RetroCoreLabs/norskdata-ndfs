@@ -23,7 +23,7 @@ ndtool [options] [args] <image>
 LISTING:
   ndtool -t <image>                          List all files
   ndtool -t -u SYSTEM <image>                List one user's files
-  ndtool -u <image>                          List users with quotas
+  ndtool -u <image>                          List users with quotas + password word
   ndtool -i <image>                          Filesystem info
   ndtool -i -v <image>                       Verbose info with bitmap map
 
@@ -152,19 +152,24 @@ USER: RONNY
 
 ## Listing Users
 
-Users are shown with their octal index, file count, and quota info:
+Users are shown with their octal index, file count, quota info, and the
+password word. The password is the 16-bit word stored on the pack, printed in
+octal with a trailing `B` the way SINTRAN writes octal numbers; `000000B` means
+the user has no password (what `--passwd` / the shell `passwd` command leaves
+behind):
 
 ```
 $ ndtool -u BIGDISK0-L.IMG
 Users: 15
-  [000]  SYSTEM             85 files  Reserved: 15000  Used: 11774  Free:  3226
-  [001]  FLOPPY-USER         0 files  Reserved:     0  Used:     0  Free:     0
-  [002]  UTILITY            17 files  Reserved:  1000  Used:   368  Free:   632
-  [003]  BPUN-FILES         30 files  Reserved:  1000  Used:   687  Free:   313
-  [004]  SCRATCH            25 files  Reserved:  2500  Used:   227  Free:  2273
-  [006]  RONNY              13 files  Reserved:  1000  Used:    87  Free:   913
-  [010]  GUEST               0 files  Reserved:   500  Used:     0  Free:   500
-  [012]  C-INCLUDE           7 files  Reserved:   300  Used:    15  Free:   285
+  Index  Name              Files      Reserved         Used         Free         Password
+  [000]  SYSTEM             85 files  Reserved: 15000  Used: 11774  Free:  3226  Password: 000000B
+  [001]  FLOPPY-USER         0 files  Reserved:     0  Used:     0  Free:     0  Password: 000000B
+  [002]  UTILITY            17 files  Reserved:  1000  Used:   368  Free:   632  Password: 000000B
+  [003]  BPUN-FILES         30 files  Reserved:  1000  Used:   687  Free:   313  Password: 000000B
+  [004]  SCRATCH            25 files  Reserved:  2500  Used:   227  Free:  2273  Password: 000000B
+  [006]  RONNY              13 files  Reserved:  1000  Used:    87  Free:   913  Password: 005325B
+  [010]  GUEST               0 files  Reserved:   500  Used:     0  Free:   500  Password: 000000B
+  [012]  C-INCLUDE           7 files  Reserved:   300  Used:    15  Free:   285  Password: 000000B
   ...
 ```
 
@@ -848,8 +853,9 @@ Deleted SYSTEM/MYFILE:TEXT
 
 ndtool> users
 Users: 2
-  [000]  SYSTEM             12 files  Reserved:  1000  Used:    53  Free:   947
-  [006]  RONNY               3 files  Reserved:   500  Used:    12  Free:   488
+  Index  Name              Files      Reserved         Used         Free         Password
+  [000]  SYSTEM             12 files  Reserved:  1000  Used:    53  Free:   947  Password: 000000B
+  [006]  RONNY               3 files  Reserved:   500  Used:    12  Free:   488  Password: 005325B
 
 ndtool> stat SYSTEM/README:TEXT
   Name:   README:TEXT
@@ -897,7 +903,7 @@ Two kinds of path appear below:
 | `info` | Filesystem summary |
 | `bitmap` | Bitmap visualization with Unicode block map |
 | `fsck` | Full 5-phase filesystem check |
-| `users` | List users with quotas |
+| `users` | List users with quotas and the password word (octal, `000000B` = no password) |
 | `useradd NAME [QUOTA]` | Add user (default quota: 100) |
 | `userdel NAME` | Remove user (must have no files) |
 | `quotaadd NAME PAGES` | Add pages to user quota |

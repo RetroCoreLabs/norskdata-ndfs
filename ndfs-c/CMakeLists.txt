@@ -87,6 +87,11 @@ set(TEST_SOURCES
     tests/test_golden.c
     tests/test_backend_stdio.c
     tests/test_damaged_media.c
+    tests/test_user_row.c
+    # The ndtool user-listing row formatter, built into the tests so the
+    # exact text of `ndtool -u` / shell `users` is checked. It depends on
+    # the library headers only, not on the rest of ndtool.
+    tools/ndtool/user_row.c
 )
 
 add_executable(ndfs_tests ${TEST_SOURCES})
@@ -95,6 +100,7 @@ target_include_directories(ndfs_tests
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tools/ndtool
 )
 
 if(NOT MSVC)
@@ -121,6 +127,7 @@ add_executable(ndtool
     tools/ndtool/cmd_segments.c
     tools/ndtool/cmd_shell.c
     tools/ndtool/parity.c
+    tools/ndtool/user_row.c
 )
 target_link_libraries(ndtool ndfs)
 target_include_directories(ndtool PRIVATE ${CMAKE_SOURCE_DIR}/include tools/ndtool)
