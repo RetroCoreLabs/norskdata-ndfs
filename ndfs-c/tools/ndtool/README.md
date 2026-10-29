@@ -79,6 +79,13 @@ DIRECTORY ENTERED FLAG:
   ndtool --release <image>                   Clear the "entered" flag + system number
   ndtool -n --release <image>                Preview, write nothing
 
+SINTRAN CPU NUMBER AND CPU TYPE (system packs):
+  ndtool --cpu-identity <image>              Show SYSNO / FCPUN / type / patch level in both copies
+  ndtool --set-cpu 21238 <image>             Change the CPU number everywhere, clear the stamp
+  ndtool --set-cpu 21238:9883 <image>        ... and the CPU type
+  ndtool -n --set-cpu 21238 <image>          Preview, write nothing
+  ndtool --keep-stamp --set-cpu 7 <image>    Change the number, keep the directory stamp
+
 OBJECT BLOCKS (how many FILES a user may hold - not how much space):
   ndtool --objblocks BIGMAN <image>          Show blocks, files held, room to grant
   ndtool --giveobjblocks BIGMAN 3 <image>    Give 3 more blocks (256 -> 1024 files)
@@ -438,6 +445,44 @@ Directory is not marked entered and has no system number: nothing to do
 Stop the emulator first: ndtool cannot see whether SINTRAN has the directory entered right now.
 `-n` prints what would change and writes nothing. In the shell the command is `release`.
 ```
+
+### Change the CPU Number and CPU Type of a SINTRAN Pack
+
+A SINTRAN system pack holds its CPU number twice (kernel words `SYSNO` and `FCPUN`) and its CPU
+type once (`HWINF+2`) in the resident data page, which is stored in two disk copies: the segment
+`S3IDPIT` (loaded by a warm start) and `S3SDPIT` (loaded by a cold start, which then copies it
+over the image). ND's own installation writes them with DMAC (`SYSNO/ 33CPN`, `FCPUN/ 33CPN`,
+`HWINF+2/ 33CPU` into `S3SDPIT`, then `@COLD-START`). `--set-cpu` writes both copies, so either
+kind of start sees the change, updates the generation symbols `33CPN` / `33CPU` in
+`SYMBOL-2-LIST:SYMB`, and clears the directory stamp (see `--release`) so the pack is not refused
+with `3203 DIRECTORY ENTERED BY ANOTHER SYSTEM` at the next boot. `--keep-stamp` leaves the stamp.
+
+Nothing is hard-coded: the word addresses come from the pack's own `SYMBOL-1-LIST` /
+`SYMBOL-2-LIST` (FCPUN moves with every SINTRAN generation), the segment numbers from the
+RT-loader's "DEFINED SEGMENT NAME" records in `RTFIL:DATA`, and the disk pages from the segment
+table in `SEGFIL0:DATA`. On SINTRAN K the save copy is on segment file 4, inside `SINTRAN:DATA`;
+on L and M both copies are inside `SEGFIL0:DATA`. If any of those cannot be found, nothing is written.
+
+```
+$ ndtool --cpu-identity disk.ndfs
+SINTRAN version: L (from INIBU 074123)
+Symbols from SYSTEM/SYMBOL-1-LIST:SYMB and SYSTEM/SYMBOL-2-LIST:SYMB:
+  SYSNO=004051 HWINF=004052 REVLE=004057 FCPUN=004414
+  33CPN               0  (000000 octal)
+  33CPU               0  (000000 octal)
+Segment names from SYSTEM/RTFIL:DATA
+Segment 44 S3IDPIT (image copy)
+  segment file 0, SYSTEM/SEGFIL0:DATA, page 1019, 45 pages
+  CPU number        100  (000144 octal)
+  ...
+$ ndtool --set-cpu 21238 disk.ndfs
+```
+
+Numbers are decimal, or octal with a trailing `B` as ND writes them (`51366B`). On a real or
+emulated ND-110 / ND-120 whose identification PROM carries the GCPUNR signature, SINTRAN L and
+later take the CPU number and type from the PROM at every start and the disk values are
+overridden in memory; the disk values still decide who owns the directory. The derivation and
+the measurements behind this command are in NDInsight, chapter `SINTRAN/OS/28`.
 
 ## Friends
 

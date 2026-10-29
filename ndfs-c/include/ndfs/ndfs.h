@@ -25,5 +25,6 @@
 #include "image_creator.h"
 #include "boot_loader.h"
 #include "sintran.h"
+#include "sintran_identity.h"
 
 #endif /* NDFS_H */

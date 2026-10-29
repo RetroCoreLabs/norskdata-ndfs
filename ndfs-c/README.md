@@ -283,6 +283,7 @@ Not verified: nobody has booted an image made this way, and the boot areas come 
 - Image creation (all 5 templates, pointer placement, bitmap)
 - Boot loader detection (BPUN, FLOMON, Binary, None)
 - SINTRAN initial-command buffer: read / write / repair (`ndfs_read_initial_commands`, `ndfs_write_initial_commands`, `ndfs_repair_initial_commands`; see [../../docs/SINTRAN-INITIAL-COMMANDS-SPEC.md](../../docs/SINTRAN-INITIAL-COMMANDS-SPEC.md))
+- SINTRAN CPU number and CPU type of a system pack: read / change / verify (`ndfs_read_cpu_identity`, `ndfs_write_cpu_identity` in `sintran_identity.h`). Word addresses come from the pack's own symbol lists, segment numbers from the RT-loader name records in `RTFIL:DATA`, pages from the segment table; both disk copies of the resident data page are written, `33CPN`/`33CPU` updated, the directory stamp cleared. Derivation: NDInsight chapter `SINTRAN/OS/28-CPU-NUMBER-AND-TYPE-ON-DISK.md`; ports: [../../docs/CPU-IDENTITY-PLAN.md](../../docs/CPU-IDENTITY-PLAN.md)
 - Read/write operations (small, multi-page, overwrite, delete, rename)
 - Write persistence (export/reimport round-trips)
 - Sparse files, user management, bitmap queries

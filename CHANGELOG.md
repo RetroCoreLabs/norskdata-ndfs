@@ -2,6 +2,22 @@
 
 All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndtool`).
 
+## Unreleased - 2026-10-29
+
+### Added - SINTRAN CPU number and CPU type on a pack (ndfs-c, ndtool only)
+
+* `ndfs_read_cpu_identity` / `ndfs_write_cpu_identity` (`sintran_identity.h`) and
+  `ndtool --cpu-identity`, `--set-cpu NUMBER[:TYPE]`, `--keep-stamp` (shell: `cpuid`, `setcpu`).
+  The CPU number is written into `SYSNO` and `FCPUN` and the type into `HWINF+2` of both disk
+  copies of the resident data page (segments `S3IDPIT` and `S3SDPIT`), `33CPN` / `33CPU` in
+  `SYMBOL-2-LIST:SYMB` are rewritten in place, and the directory's "entered by system N" stamp is
+  cleared unless `--keep-stamp`. Word addresses come from the pack's own symbol lists, segment
+  numbers from the RT-loader name records in `RTFIL:DATA` (or their copies inside `SEGFIL0`),
+  disk pages from the segment table; on SINTRAN K the save copy is found on segment file 4 in
+  `SINTRAN:DATA`. Nothing is written unless every target is reachable, and the result is read back.
+  Replaces the DMAC session `)CLOAD S3IDPIT ... SYSNO/old new`. Derivation: NDInsight chapter
+  `SINTRAN/OS/28-CPU-NUMBER-AND-TYPE-ON-DISK.md`. Python, TypeScript and C# ports: `docs/CPU-IDENTITY-PLAN.md`.
+
 ## Unreleased - 2026-10-21
 
 ### Added - ndtool --fsck gives a verdict and can repair (ndfs-c, ndtool only)

@@ -94,6 +94,9 @@ int cmd_takeobjblocks(ndtool_ctx_t *ctx, const char *name, uint32_t count);
 int cmd_remquota(ndtool_ctx_t *ctx, const char *name, uint32_t pages);
 int cmd_passwd(ndtool_ctx_t *ctx, const char *name);
 int cmd_release(ndtool_ctx_t *ctx);
+/* SINTRAN CPU number / CPU type on a system pack (sintran_identity.h). */
+int cmd_cpu_identity(ndtool_ctx_t *ctx);
+int cmd_set_cpu(ndtool_ctx_t *ctx, const char *spec, bool keep_stamp);
 /* Friend commands. add/del take "OWNER:FRIEND[:RWACD]" / "OWNER:FRIEND";
  * list takes a user name or index. */
 int cmd_friend_add(ndtool_ctx_t *ctx, const char *arg);

@@ -52,6 +52,8 @@ static void shell_help(void)
     printf("  quotadel NAME PAGES          Remove pages from user quota\n");
     printf("  passwd NAME                  Clear user password\n");
     printf("  release                      Clear the directory-entered flag and system number\n");
+    printf("  cpuid                        Show the SINTRAN CPU number / type (both copies, stamp)\n");
+    printf("  setcpu NUMBER[:TYPE] [keep]  Change the CPU number (and type); keep = keep the stamp\n");
     printf("  friends USER                 List a user's friends and their rights\n");
     printf("  friendadd OWNER FRIEND [R]   Add friend (R = rights, default RWA)\n");
     printf("  frienddel OWNER FRIEND       Remove a friend\n");
@@ -645,6 +647,16 @@ int cmd_shell(ndtool_ctx_t *ctx)
             }
             else if (strcmp(cmd, "release") == 0) {
                 cmd_release(ctx);
+            }
+            else if (strcmp(cmd, "cpuid") == 0) {
+                cmd_cpu_identity(ctx);
+            }
+            else if (strcmp(cmd, "setcpu") == 0) {
+                if (!arg1) {
+                    fprintf(stderr, "Usage: setcpu NUMBER[:TYPE] [keep]\n");
+                } else {
+                    cmd_set_cpu(ctx, arg1, arg2 && strcmp(arg2, "keep") == 0);
+                }
             }
             else if (strcmp(cmd, "save") == 0) {
                 if (arg1) ctx->image_path = arg1;

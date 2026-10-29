@@ -28,6 +28,7 @@ set(NDFS_SOURCES
     src/boot_blobs.c
     src/boot_loader.c
     src/sintran.c
+    src/sintran_identity.c
     src/xat.c
     src/parity.c
     src/wildmatch.c
@@ -72,6 +73,7 @@ set(TEST_SOURCES
     tests/test_image_creator.c
     tests/test_boot_loader.c
     tests/test_sintran.c
+    tests/test_sintran_identity.c
     tests/test_write_comprehensive.c
     tests/test_fsck.c
     tests/test_alloc_rules.c
@@ -113,6 +115,7 @@ add_executable(ndtool
     tools/ndtool/cmd_stat.c
     tools/ndtool/cmd_chmod.c
     tools/ndtool/cmd_fsck.c
+    tools/ndtool/cmd_cpuid.c
     tools/ndtool/cmd_shell.c
     tools/ndtool/parity.c
 )
