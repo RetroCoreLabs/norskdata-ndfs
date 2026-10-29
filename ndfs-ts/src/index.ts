@@ -27,6 +27,8 @@ export * from './disk-types.js';
 export * from './boot-blobs.js';
 export * from './boot-loader.js';
 export * as sintran from './sintran.js';
+export * from './sintran-identity.js';
+export * from './sintran-segments.js';
 export * from './parity.js';
 export * from './wildmatch.js';
 export * from './xat.js';

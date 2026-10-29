@@ -80,6 +80,33 @@ from ndfs.sintran import (
     locate_repair_target,
     enumerate_candidates,
 )
+from ndfs.sintran_identity import (
+    SEGNAME_IMAGE_DPIT,
+    SEGNAME_SAVE_DPIT,
+    RTFIL_TYPE_SEGMENT_NAME,
+    CpuIdentityError,
+    SintranSymbols,
+    DpitCopy,
+    CpuIdentity,
+    segment_word_offset,
+    find_symbol,
+    decode_packed_name,
+    find_segment_by_name,
+    find_system_file,
+    read_cpu_identity,
+    write_cpu_identity,
+)
+from ndfs.sintran_segments import (
+    SEGFILE_COUNT,
+    SegFile,
+    Segment,
+    SegmentList,
+    collect_segment_names,
+    list_segments,
+    find_segment,
+    export_segment,
+    import_segment,
+)
 from ndfs.xat import (
     object_entry_to_xat,
     xat_to_object_entry,
@@ -143,6 +170,12 @@ __all__ = [
     # SINTRAN initial commands
     "InitialCommands", "InitCmdCandidate", "find_segment_table_page", "parse_buffer",
     "encode_buffer", "reencode_matches", "locate", "locate_repair_target", "enumerate_candidates",
+    # SINTRAN CPU number / type and segments
+    "SEGNAME_IMAGE_DPIT", "SEGNAME_SAVE_DPIT", "RTFIL_TYPE_SEGMENT_NAME", "CpuIdentityError",
+    "SintranSymbols", "DpitCopy", "CpuIdentity", "segment_word_offset", "find_symbol",
+    "decode_packed_name", "find_segment_by_name", "find_system_file", "read_cpu_identity",
+    "write_cpu_identity", "SEGFILE_COUNT", "SegFile", "Segment", "SegmentList",
+    "collect_segment_names", "list_segments", "find_segment", "export_segment", "import_segment",
     # XAT support
     "object_entry_to_xat", "xat_to_object_entry", "serialize_xat", "deserialize_xat",
     "get_xat_filename", "is_xat_file",

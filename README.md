@@ -59,12 +59,12 @@ Three standalone libraries with identical APIs, plus a CLI tool:
 
 | Library | Language | Tests | Install |
 |---------|----------|-------|---------|
-| [ndfs-ts](ndfs-ts/) | TypeScript | 396 | `npm install norskdata-ndfs` |
-| [ndfs-py](ndfs-py/) | Python | 475 | `pip install norskdata-ndfs` |
-| [ndfs-c](ndfs-c/) | C99 | 261 | `cmake .. && make` |
+| [ndfs-ts](ndfs-ts/) | TypeScript | 494 | `npm install norskdata-ndfs` |
+| [ndfs-py](ndfs-py/) | Python | 552 | `pip install norskdata-ndfs` |
+| [ndfs-c](ndfs-c/) | C99 | 344 | `cmake .. && make` |
 | [ndtool](ndfs-c/tools/ndtool/README.md) | CLI (C) | -- | Built with libndfs |
 
-**Total: 1132 tests. No external dependencies in any library.**
+**Total: 1390 tests (counted 2026-10-29). No external dependencies in any library.**
 
 ## What It Does
 
@@ -75,6 +75,8 @@ Three standalone libraries with identical APIs, plus a CLI tool:
 - **XAT sidecar files** for preserving NDFS metadata (permissions, file types, dates) when copying to/from host filesystems
 - **Boot loader detection** (BPUN, FLOMON, Binary formats)
 - **SINTRAN initial commands** (read / write / repair the `@LIST-INITIAL-COMMANDS` buffer that lives at kernel symbol INIBU inside `SEGFIL0`)
+- **SINTRAN CPU number and type** (read / change the CPU number in `SYSNO` + `FCPUN` and the type in `HWINF+2` of both disk copies of the resident data page, rewrite `33CPN`/`33CPU`, clear the "entered by system N" directory stamp; `ndtool --cpu-identity` / `--set-cpu`, all three libraries)
+- **SINTRAN segments** (list every segment with its name and disk page, export and import one; `ndtool --segments` / `--export-segment` / `--import-segment`, all three libraries)
 - **Filesystem check** (fsck: bitmap consistency, orphaned blocks, cross-links, quota verification)
 - **Interactive shell** (ndtool --shell: ls, cat, hexdump, edit, get, put, rm, mv, bitmap, fsck, stat, users, save)
 
@@ -148,6 +150,36 @@ ndfs.repairInitialCommands([ 'ENTER-DIRECTORY,,DISC-SCSI-1,0', 'SET-AVAILABLE' ]
 ```python
 ic = ndfs.read_initial_commands()             # -> InitialCommands | None
 ndfs.write_initial_commands(['ENTER-DIRECTORY,,DISC-SCSI-1,0', 'SET-AVAILABLE'])
+```
+
+### SINTRAN CPU number, CPU type and segments
+
+A SINTRAN pack holds its CPU number twice (`SYSNO`, `FCPUN`) and its CPU type once (`HWINF+2`)
+in the resident data page, stored on disk in the segments `S3IDPIT` (warm start) and `S3SDPIT`
+(cold start). Two nodes with the same number break COSMOS routing, and a pack entered by another
+system is refused at `@ENTER-DIRECTORY`. Change both, offline, on a COPY of the pack (the
+derivation is in the NDInsight chapter `SINTRAN/OS/28-CPU-NUMBER-AND-TYPE-ON-DISK.md`):
+
+```bash
+ndtool -f pack.IMG --cpu-identity               # both copies, the symbols, the directory stamp
+ndtool -f pack.IMG --set-cpu 21238:9883         # number 21238, type 9883, stamp cleared
+ndtool -f pack.IMG --segments                   # every segment, its name and disk page
+ndtool -f pack.IMG --export-segment S3SDPIT     # S3SDPIT.seg + S3SDPIT.txt
+```
+
+```typescript
+const ident = readCpuIdentity(ndfs);            // CpuIdentity: copies[0].sysno, .fcpun, .cpuType ...
+writeCpuIdentity(ndfs, 21238, 9883);            // writes both copies, 33CPN/33CPU, clears the stamp
+const segs = listSegments(ndfs);                // SegmentList: segfiles[0..4], segments[].diskPage
+const data = exportSegment(ndfs, segs, findSegment(segs, 'S3SDPIT'));
+```
+
+```python
+from ndfs import read_cpu_identity, write_cpu_identity, list_segments, find_segment, export_segment
+ident = read_cpu_identity(ndfs)                 # CpuIdentity: copies[0].sysno, .fcpun, .cpu_type ...
+write_cpu_identity(ndfs, 21238, 9883)           # writes both copies, 33CPN/33CPU, clears the stamp
+segs = list_segments(ndfs)                      # SegmentList: segfiles[0..4], segments[].disk_page
+data = export_segment(ndfs, segs, find_segment(segs, 'S3SDPIT'))
 ```
 
 ### ndtool CLI

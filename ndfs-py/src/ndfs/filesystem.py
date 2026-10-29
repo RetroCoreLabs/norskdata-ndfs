@@ -29,6 +29,7 @@ from ndfs.constants import (
     MAX_USERS,
     NDFS_NAME_MAX,
     NDFS_TYPE_MAX,
+    EXTENDED_INFO_OFFSET,
 )
 from ndfs.endian import read_uint32_be, write_uint32_be
 from ndfs.errors import ObjectBlockCollisionError, ObjectBlockLimitError
@@ -46,7 +47,10 @@ from ndfs.object_entry import (
     FT_CONTIGUOUS,
     compute_file_number,
 )
-from ndfs.types import PointerType, FileEntry, ImageCreationOptions, BootFormat, BootControllerType, BootCode
+from ndfs.types import (
+    PointerType, FileEntry, ImageCreationOptions, BootFormat, BootControllerType, BootCode,
+    ChecksumValidation,
+)
 from ndfs.xat import object_entry_to_xat, xat_to_object_entry, XAT_HOLES
 from ndfs import sintran
 
@@ -932,6 +936,62 @@ class NdfsFileSystem:
             "user_pages": self._user_file.unreadable_pages,
             "bit_file_pages": self._unreadable_bit_file_pages,
         }
+
+    # -- Raw disk pages ---------------------------------------------------
+    #
+    # The SINTRAN segment tools (ndfs.sintran_segments) address the pack by DISK
+    # page, not through the file system: a segment file's pages come from the
+    # kernel's own DBLST table, and segment file 4 is absolute on the pack. These
+    # three mirror ndfs_get_total_pages / ndfs_read_disk_page / ndfs_write_disk_page.
+
+    @property
+    def total_pages(self) -> int:
+        """Number of whole 2048-byte pages in the image."""
+        return len(self._data) // NDFS_PAGE_SIZE
+
+    def read_disk_page(self, page: int) -> bytes:
+        """Return one raw disk page. Raises IndexError past the end of the image."""
+        if page < 0 or page >= self.total_pages:
+            raise IndexError(f"Disk page {page} out of range")
+        return bytes(self._read_page(page))
+
+    def write_disk_page(self, page: int, page_data: Union[bytes, bytearray, memoryview]) -> None:
+        """Overwrite one raw disk page. Raises IndexError past the end of the image
+        and ValueError when `page_data` is not exactly one page."""
+        self._ensure_writable()
+        if page < 0 or page >= self.total_pages:
+            raise IndexError(f"Disk page {page} out of range")
+        if len(page_data) != NDFS_PAGE_SIZE:
+            raise ValueError("A disk page is exactly 2048 bytes")
+        self._write_page(page, page_data)
+
+    def release_directory(self) -> Tuple[bool, int]:
+        """Clear the "entered by system N" stamp in the Extended Info Block.
+
+        The kernel sets flag bit 15 (word 1754B) at ENTER-DIRECTORY (CHDSI) and
+        stores its own SYSNO in word 1755B; a pack that still carries the stamp of
+        another system is refused with error 3203 "DIRECTORY ENTERED BY ANOTHER
+        SYSTEM". This clears the bit, zeroes the system number and rewrites the
+        additive checksum, exactly as ``ndfs_release_directory`` in ndfs-c does.
+
+        Returns (was_entered, was_system_number) as they were before the clear.
+        """
+        self._ensure_writable()
+        mb = self._master_block
+        was_entered = mb.is_directory_entered
+        was_system = mb.ext_last_system_number
+        mb.ext_flag_word &= ~MasterBlock.EXT_FLAG_ENTERED
+        mb.ext_last_system_number = 0
+        page0 = bytearray(self._read_page(0))
+        mb.write_extended_info(page0)   # stores a freshly computed checksum
+        self._write_page(0, page0)
+        # The cached view must agree with what is now on page 0.
+        mb.ext_checksum = mb.ext_calculated_checksum = (
+            (page0[EXTENDED_INFO_OFFSET] << 8) | page0[EXTENDED_INFO_OFFSET + 1]
+        )
+        mb.checksum_state = ChecksumValidation.Valid
+        mb.ext_valid = True
+        return was_entered, was_system
 
     def _read_page(self, block_id: int) -> memoryview:
         """Read a page from the image buffer."""

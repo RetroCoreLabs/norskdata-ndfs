@@ -4,8 +4,21 @@ All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndto
 
 ## Unreleased - 2026-10-29
 
-### Added - SINTRAN CPU number and CPU type on a pack (ndfs-c, ndtool only)
+### Added - SINTRAN CPU number and CPU type on a pack (all three ports and ndtool)
 
+* ndfs-py: `ndfs.sintran_identity` (`read_cpu_identity`, `write_cpu_identity`, `find_symbol`,
+  `decode_packed_name`, `find_segment_by_name`, `segment_word_offset`) and `ndfs.sintran_segments`
+  (`list_segments`, `find_segment`, `export_segment`, `import_segment`, `collect_segment_names`)
+  port the C code behaviour for behaviour; `NdfsFileSystem` gains `release_directory`,
+  `read_disk_page`, `write_disk_page` and `total_pages`. Tests mirror the two C test files case for
+  case (`tests/test_sintran_identity.py`, `tests/test_sintran_segments.py`).
+* ndfs-ts: the same in `sintran-identity.ts` (`readCpuIdentity`, `writeCpuIdentity`, ...) and
+  `sintran-segments.ts` (`listSegments`, `findSegment`, `exportSegment`, `importSegment`,
+  `collectSegmentNames`); `NdfsFileSystem` gains `releaseDirectory`, `readDiskPage`, `writeDiskPage`
+  and `totalPages`. Tests `tests/sintran-identity.test.ts`, `tests/sintran-segments.test.ts`.
+* Checked against copies of the K-100 and L2-100 packs: the Python and TypeScript read views match
+  `ndtool --cpu-identity` / `--segments` word for word, a pack changed to 21238 with either writer
+  reads back as 21238 in ndtool, and the images written by the two ports are byte-identical.
 * `ndfs_read_cpu_identity` / `ndfs_write_cpu_identity` (`sintran_identity.h`) and
   `ndtool --cpu-identity`, `--set-cpu NUMBER[:TYPE]`, `--keep-stamp` (shell: `cpuid`, `setcpu`).
   The CPU number is written into `SYSNO` and `FCPUN` and the type into `HWINF+2` of both disk

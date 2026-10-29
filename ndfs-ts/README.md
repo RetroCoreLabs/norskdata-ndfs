@@ -270,6 +270,7 @@ USERNAME/FILENAME.TYPE   Also accepted (dot converted to colon)
 - Image creation (all 5 templates, custom sizes, pointer placement)
 - Boot loader detection (BPUN, FLOMON, Binary, None)
 - SINTRAN initial-command buffer: read / write / repair (`readInitialCommands`, `writeInitialCommands`, `repairInitialCommands`; see [../docs/SINTRAN-INITIAL-COMMANDS-SPEC.md](../docs/SINTRAN-INITIAL-COMMANDS-SPEC.md))
+- SINTRAN CPU number and type on a system pack (`readCpuIdentity` / `writeCpuIdentity`: both DPIT copies, the 33CPN/33CPU symbols, the directory stamp; addresses from the pack's own symbol lists, segment numbers from the RT-loader name records) and SINTRAN segments (`listSegments` / `findSegment` / `exportSegment` / `importSegment`, disk pages from the kernel's DBLST/ABLPAGE/MASSNO tables); `releaseDirectory`, `readDiskPage`, `writeDiskPage`, `totalPages` on `NdfsFileSystem`. Synthetic K- and L-shaped packs, same cases as the C tests.
 - Read operations (contiguous, indexed, sub-indexed, sparse holes)
 - Write operations (small, 1-page, multi-page, >512-page sub-indexed, overwrite)
 - Write persistence (export/reimport round-trips)

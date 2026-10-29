@@ -25,6 +25,7 @@ import {
   MAX_USERS,
   NDFS_NAME_MAX,
   NDFS_TYPE_MAX,
+  EXTENDED_INFO_OFFSET,
 } from './constants.js';
 import { readUint32BE, writeUint32BE } from './endian.js';
 import { ObjectBlockCollisionError, ObjectBlockLimitError } from './errors.js';
@@ -43,7 +44,7 @@ import {
   FT_INDEXED,
   FT_CONTIGUOUS,
 } from './object-entry.js';
-import { PointerType, FileEntry, BootFormat, BootControllerType, BootCode, ImageTemplate, ImageCreationOptions } from './types.js';
+import { PointerType, FileEntry, BootFormat, BootControllerType, BootCode, ImageTemplate, ImageCreationOptions, ChecksumValidation } from './types.js';
 import { createNdfsImage } from './image-creator.js';
 import { detectBootFormat, loadBootCode as loadBootCodeFromPage, detectControllerType } from './boot-loader.js';
 import { stripParity, setParity } from './parity.js';
@@ -1126,6 +1127,58 @@ export class NdfsFileSystem {
       userPages: this.userFile.unreadablePages,
       bitFilePages: this.unreadableBitFilePages,
     };
+  }
+
+  // -- Raw disk pages ----------------------------------------------------
+  //
+  // The SINTRAN segment tools (sintran-segments.ts) address the pack by DISK page,
+  // not through the file system: a segment file's pages come from the kernel's own
+  // DBLST table, and segment file 4 is absolute on the pack. These three mirror
+  // ndfs_get_total_pages / ndfs_read_disk_page / ndfs_write_disk_page.
+
+  /** Number of whole 2048-byte pages in the image. */
+  get totalPages(): number {
+    return Math.floor(this.data.length / NDFS_PAGE_SIZE);
+  }
+
+  /** One raw disk page (a copy). Throws past the end of the image. */
+  readDiskPage(page: number): Uint8Array {
+    if (page < 0 || page >= this.totalPages) throw new RangeError(`Disk page ${page} out of range`);
+    return new Uint8Array(this.readPage(page));
+  }
+
+  /** Overwrite one raw disk page. Throws past the end of the image and when `pageData` is not exactly one page. */
+  writeDiskPage(page: number, pageData: Uint8Array): void {
+    this.ensureWritable();
+    if (page < 0 || page >= this.totalPages) throw new RangeError(`Disk page ${page} out of range`);
+    if (pageData.length !== NDFS_PAGE_SIZE) throw new Error('A disk page is exactly 2048 bytes');
+    this.writePage(page, pageData);
+  }
+
+  /**
+   * Clear the "entered by system N" stamp in the Extended Info Block.
+   *
+   * The kernel sets flag bit 15 (word 1754B) at ENTER-DIRECTORY (CHDSI) and stores its
+   * own SYSNO in word 1755B; a pack that still carries the stamp of another system is
+   * refused with error 3203 "DIRECTORY ENTERED BY ANOTHER SYSTEM". This clears the bit,
+   * zeroes the system number and rewrites the additive checksum, exactly as
+   * ndfs_release_directory in ndfs-c does. Returns the stamp as it was before.
+   */
+  releaseDirectory(): { wasEntered: boolean; wasSystemNumber: number } {
+    this.ensureWritable();
+    const mb = this.masterBlock;
+    const wasEntered = mb.isDirectoryEntered;
+    const wasSystemNumber = mb.extLastSystemNumber;
+    mb.extFlagWord &= ~MasterBlock.EXT_FLAG_ENTERED & 0xffff;
+    mb.extLastSystemNumber = 0;
+    const page0 = new Uint8Array(this.readPage(0));
+    mb.writeExtendedInfo(page0); // stores a freshly computed checksum
+    this.writePage(0, page0);
+    // The cached view must agree with what is now on page 0.
+    mb.extChecksum = mb.extCalculatedChecksum = (page0[EXTENDED_INFO_OFFSET] << 8) | page0[EXTENDED_INFO_OFFSET + 1];
+    mb.checksumState = ChecksumValidation.Valid;
+    mb.extValid = true;
+    return { wasEntered, wasSystemNumber };
   }
 
   private readPage(blockId: number): Uint8Array {
