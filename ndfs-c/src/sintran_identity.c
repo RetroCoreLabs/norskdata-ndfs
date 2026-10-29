@@ -143,8 +143,8 @@ static void trim_type(char *type)
 
 /* Build "USER/NAME:TYPE" for the first object owned by SYSTEM with this name and
  * type. Returns NDFS_ERR_NOT_FOUND when there is none. */
-static ndfs_error_t find_system_file(const ndfs_filesystem_t *fs, const char *name,
-                                     const char *want_type, char *path, size_t path_sz)
+ndfs_error_t ndfs_sintran_find_system_file(const ndfs_filesystem_t *fs, const char *name,
+                                           const char *want_type, char *path, size_t path_sz)
 {
     ndfs_object_entry_t *objs;
     size_t count, i;
@@ -170,9 +170,9 @@ static ndfs_error_t find_system_file(const ndfs_filesystem_t *fs, const char *na
 /* SEGFIL0:DATA, or the older name SEGFIL:DATA. */
 static ndfs_error_t find_segfil(const ndfs_filesystem_t *fs, char *path, size_t path_sz)
 {
-    ndfs_error_t err = find_system_file(fs, "SEGFIL0", "DATA", path, path_sz);
+    ndfs_error_t err = ndfs_sintran_find_system_file(fs, "SEGFIL0", "DATA", path, path_sz);
     if (err == NDFS_ERR_NOT_FOUND)
-        err = find_system_file(fs, "SEGFIL", "DATA", path, path_sz);
+        err = ndfs_sintran_find_system_file(fs, "SEGFIL", "DATA", path, path_sz);
     return err;
 }
 
@@ -253,7 +253,7 @@ static void resolve_segment_names(const ndfs_filesystem_t *fs, const uint8_t *se
     for (i = 0; i < 2; i++) out->copies[i].segment_number = -1;
     out->names_path[0] = '\0';
 
-    if (find_system_file(fs, "RTFIL", "DATA", path, sizeof(path)) == NDFS_OK &&
+    if (ndfs_sintran_find_system_file(fs, "RTFIL", "DATA", path, sizeof(path)) == NDFS_OK &&
         ndfs_read_file(fs, path, &rt, &rt_size) == NDFS_OK) {
         for (i = 0; i < 2; i++)
             out->copies[i].segment_number = ndfs_sintran_find_segment_by_name(rt, rt_size, out->copies[i].name);
@@ -284,7 +284,7 @@ static ndfs_error_t segment_file_path(const ndfs_filesystem_t *fs, int segment_f
             path[path_sz - 1] = '\0';
             return NDFS_OK;
         case 4:
-            return find_system_file(fs, "SINTRAN", "DATA", path, path_sz);
+            return ndfs_sintran_find_system_file(fs, "SINTRAN", "DATA", path, path_sz);
         default:
             path[0] = '\0';
             return NDFS_ERR_NOT_FOUND;
@@ -372,9 +372,9 @@ ndfs_error_t ndfs_read_cpu_identity(const ndfs_filesystem_t *fs, ndfs_cpu_identi
     }
 
     /* The pack's own symbol lists. */
-    err = find_system_file(fs, "SYMBOL-1-LIST", "SYMB", out->symbol1_path, sizeof(out->symbol1_path));
+    err = ndfs_sintran_find_system_file(fs, "SYMBOL-1-LIST", "SYMB", out->symbol1_path, sizeof(out->symbol1_path));
     if (err != NDFS_OK) return NDFS_ERR_NOT_FOUND;
-    err = find_system_file(fs, "SYMBOL-2-LIST", "SYMB", out->symbol2_path, sizeof(out->symbol2_path));
+    err = ndfs_sintran_find_system_file(fs, "SYMBOL-2-LIST", "SYMB", out->symbol2_path, sizeof(out->symbol2_path));
     if (err != NDFS_OK) return NDFS_ERR_NOT_FOUND;
     err = read_symlist(fs, out->symbol1_path, &s1);
     if (err != NDFS_OK) return err;

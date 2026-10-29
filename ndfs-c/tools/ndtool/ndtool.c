@@ -52,6 +52,9 @@ static struct option long_options[] = {
     {"cpu-identity", no_argument,    0, 1041},
     {"set-cpu",   required_argument, 0, 1042},
     {"keep-stamp", no_argument,      0, 1043},
+    {"segments",  no_argument,       0, 1044},
+    {"export-segment", required_argument, 0, 1045},
+    {"import-segment", required_argument, 0, 1046},
     {"create",    required_argument, 0, 'C'},
     {"shell",     no_argument,       0, 'S'},
     {"fsck",      no_argument,       0, 1005},
@@ -115,6 +118,9 @@ int main(int argc, char **argv)
     int do_cpu_identity = 0;
     const char *set_cpu_spec = NULL;
     bool keep_stamp = false;
+    int do_segments = 0;
+    const char *export_segment = NULL;
+    const char *import_segment = NULL;
     const char *friend_add_arg = NULL;
     const char *friend_del_arg = NULL;
     const char *friends_arg = NULL;
@@ -167,6 +173,9 @@ int main(int argc, char **argv)
         case 1041: do_cpu_identity = 1; break;
         case 1042: set_cpu_spec = optarg; needs_write = 1; break;
         case 1043: keep_stamp = true; break;
+        case 1044: do_segments = 1; break;
+        case 1045: export_segment = optarg; break;
+        case 1046: import_segment = optarg; needs_write = 1; break;
         case 1013: friend_add_arg = optarg; needs_write = 1; break;
         case 1014: friend_del_arg = optarg; needs_write = 1; break;
         case 1015: friends_arg = optarg; break;
@@ -356,6 +365,12 @@ int main(int argc, char **argv)
         ret = cmd_set_cpu(&ctx, set_cpu_spec, keep_stamp);
     } else if (do_cpu_identity) {
         ret = cmd_cpu_identity(&ctx);
+    } else if (import_segment) {
+        ret = cmd_import_segment(&ctx, import_segment);
+    } else if (export_segment) {
+        ret = cmd_export_segment(&ctx, export_segment);
+    } else if (do_segments) {
+        ret = cmd_segments(&ctx);
     } else if (friend_add_arg) {
         ret = cmd_friend_add(&ctx, friend_add_arg);
     } else if (friend_del_arg) {
@@ -399,6 +414,12 @@ static void print_usage(const char *prog)
     printf("                           copies of the resident data page, 33CPN/33CPU, directory stamp)\n");
     printf("  --set-cpu NUMBER[:TYPE]  Change the CPU number (and type) in both copies and 33CPN/33CPU,\n");
     printf("                           and clear the directory stamp; --keep-stamp keeps it; -n previews\n");
+    printf("  --segments               List a SINTRAN pack's segments: number, name, base, length,\n");
+    printf("                           segment file and disk page (-v adds every table word)\n");
+    printf("  --export-segment NAME    Write a segment's pages to NAME.seg (+ NAME.seg.txt) in -o DIR\n");
+    printf("                           NAME is the RT-loader name (S3FS) or the octal number (06B)\n");
+    printf("  --import-segment NAME=FILE  Write FILE over the segment's pages (same length or shorter);\n");
+    printf("                           -n previews. The emulator must not have the pack open.\n");
     printf("  --objblocks NAME         Show object blocks and file count for a user\n");
     printf("  --giveobjblocks NAME N   Give N more object blocks (256 files each, max 16)\n");
     printf("                           The @GIVE-OBJECT-BLOCKS equivalent. Raises the\n");

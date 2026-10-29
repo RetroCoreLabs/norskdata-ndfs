@@ -86,6 +86,14 @@ SINTRAN CPU NUMBER AND CPU TYPE (system packs):
   ndtool -n --set-cpu 21238 <image>          Preview, write nothing
   ndtool --keep-stamp --set-cpu 7 <image>    Change the number, keep the directory stamp
 
+SINTRAN SEGMENTS (system packs):
+  ndtool --segments <image>                  Segment table with names, bases, lengths, disk pages
+  ndtool -v --segments <image>               ... plus every table word
+  ndtool -o out --export-segment S3FS <image>      Write out/S3FS.seg (+ .seg.txt)
+  ndtool -o out --export-segment 53B <image>       By octal number (trailing B) or decimal
+  ndtool --import-segment S3SDPIT=patched.seg <image>  Write a file over a segment's pages
+  ndtool -n --import-segment S3SDPIT=x.seg <image>     Preview, write nothing
+
 OBJECT BLOCKS (how many FILES a user may hold - not how much space):
   ndtool --objblocks BIGMAN <image>          Show blocks, files held, room to grant
   ndtool --giveobjblocks BIGMAN 3 <image>    Give 3 more blocks (256 -> 1024 files)
@@ -483,6 +491,48 @@ emulated ND-110 / ND-120 whose identification PROM carries the GCPUNR signature,
 later take the CPU number and type from the PROM at every start and the disk values are
 overridden in memory; the disk values still decide who owns the directory. The derivation and
 the measurements behind this command are in NDInsight, chapter `SINTRAN/OS/28`.
+
+### SINTRAN Segments: List, Export, Import
+
+SINTRAN keeps its swappable code and data in segments, numbered 1-255. `--segments` prints the
+segment table of a system pack with the RT-loader name of every segment, its logical base, length
+in 1024-word pages, segment file, MADR and the disk page where its first page sits on this image:
+
+```
+$ ndtool --segments disk.ndfs
+SINTRAN version K, segment table at page 461 of SYSTEM/SEGFIL0:DATA, names from SYSTEM/RTFIL:DATA
+Segment files (from DBLST / ABLPAGE / MASSNO in S3IDPIT, symbols BLST/ABLPA/MASSN):
+  0: disk page 128 (DBLST 256 blocks, 2 blocks per page), file SYSTEM/SEGFIL0:DATA [DBLST / ABLPAGE in S3IDPIT]
+  1: not defined
+  ...
+  4: disk page 1 (DBLST 0 blocks, 2 blocks per page), file SYSTEM/SINTRAN:DATA [start-up rule, ABLPAGE(0) blocks (OPPSTART:751)]
+
+ seg  name      base   pages  sf  MADR   disk page  flags
+ 002  S3IMAGE   000000    27  0      0  128        5OK
+ 006  S3FS      026000    53  0    560  688        5OK
+ 023  S3DPIT    004000     0  0      0  memory     5OK
+ 044  S3IDPIT   004000    35  0     27  155        5OK
+ 053  S3SDPIT   004000    35  4     27  28         5OK
+```
+
+Everything comes from the pack. The names are the RT-loader's "DEFINED SEGMENT NAME" records in
+`RTFIL:DATA` (or their copy inside `SEGFIL0`). The segment files are the kernel's own tables
+`DBLST` (start in disk blocks), `ABLPAGE` (blocks per page) and `MASSNO` (which disk), read from
+the `S3IDPIT` copy through the pack's symbol list, so segment files 1-3 are found wherever the
+installer put them; a segment file on another disk unit is reported and not touched. Segment file
+4 is the absolute save area whose base SINTRAN sets at every start to one page (`OPPSTART:751`);
+on the K packs that puts `S3SDPIT` at disk page 28, inside `SINTRAN:DATA`. Without a symbol list
+only segment file 0 is known, from where `SEGFIL0:DATA` begins. A segment with 0 pages has no
+disk copy (`memory`); MADR 0 is a real offset (`S3IMAGE`, `S3SAVE`).
+
+`--export-segment NAME` writes the segment's pages in order to `NAME.seg` in the `-o` directory
+(default `.`) and a `NAME.seg.txt` with number, version, logical base, pages, segment file, MADR
+and disk page, so a disassembler loads it at the right address. `--import-segment NAME=FILE`
+writes a host file over the segment's pages, same length or shorter (a shorter file leaves the
+rest of the last page and the tail pages as they were); it refuses a longer file, a memory-only
+segment or an unknown segment file, and nothing is written if a check fails. Importing an image
+copy (`S3I...`) is undone by the next cold start, which reloads the save copy (`S3S...`). Stop the
+emulator first. In the shell: `segments`, `export-segment NAME`, `import-segment NAME FILE`.
 
 ## Friends
 

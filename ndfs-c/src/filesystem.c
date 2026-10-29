@@ -4970,3 +4970,37 @@ const char *ndfs_strerror(ndfs_error_t err)
         default:                    return "Unknown error";
     }
 }
+
+
+/* ── Raw disk pages ───────────────────────────────────────────────────────
+ * SINTRAN addresses its segment files by disk page (DBLST / ABLPAGE + MADR), not
+ * by NDFS file, so the segment tools need the pages themselves. These are the
+ * only public page-level accessors; everything else goes through files. */
+
+uint32_t ndfs_get_total_pages(const ndfs_filesystem_t *fs)
+{
+    return fs ? fs->total_pages : 0;
+}
+
+ndfs_error_t ndfs_read_disk_page(const ndfs_filesystem_t *fs, uint32_t page, uint8_t *out)
+{
+    const uint8_t *p;
+    if (!fs || !out) return NDFS_ERR_NULL_PTR;
+    if (page >= fs->total_pages) return NDFS_ERR_OUT_OF_RANGE;
+    p = read_page(fs, page);
+    if (!p) return NDFS_ERR_IO;
+    memcpy(out, p, NDFS_PAGE_SIZE);
+    return NDFS_OK;
+}
+
+ndfs_error_t ndfs_write_disk_page(ndfs_filesystem_t *fs, uint32_t page, const uint8_t *data)
+{
+    uint8_t *p;
+    if (!fs || !data) return NDFS_ERR_NULL_PTR;
+    if (fs->read_only) return NDFS_ERR_READ_ONLY;
+    if (page >= fs->total_pages) return NDFS_ERR_OUT_OF_RANGE;
+    p = write_page_ptr(fs, page);
+    if (!p) return NDFS_ERR_IO;
+    memcpy(p, data, NDFS_PAGE_SIZE);
+    return NDFS_OK;
+}

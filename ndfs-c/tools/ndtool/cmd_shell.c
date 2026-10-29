@@ -54,6 +54,9 @@ static void shell_help(void)
     printf("  release                      Clear the directory-entered flag and system number\n");
     printf("  cpuid                        Show the SINTRAN CPU number / type (both copies, stamp)\n");
     printf("  setcpu NUMBER[:TYPE] [keep]  Change the CPU number (and type); keep = keep the stamp\n");
+    printf("  segments                     List the SINTRAN segments (name, base, length, disk page)\n");
+    printf("  export-segment NAME          Write a segment to NAME.seg in the output directory\n");
+    printf("  import-segment NAME FILE     Write a host file over a segment's pages\n");
     printf("  friends USER                 List a user's friends and their rights\n");
     printf("  friendadd OWNER FRIEND [R]   Add friend (R = rights, default RWA)\n");
     printf("  frienddel OWNER FRIEND       Remove a friend\n");
@@ -650,6 +653,21 @@ int cmd_shell(ndtool_ctx_t *ctx)
             }
             else if (strcmp(cmd, "cpuid") == 0) {
                 cmd_cpu_identity(ctx);
+            }
+            else if (strcmp(cmd, "segments") == 0) {
+                cmd_segments(ctx);
+            }
+            else if (strcmp(cmd, "export-segment") == 0) {
+                if (!arg1) fprintf(stderr, "Usage: export-segment NAME\n");
+                else cmd_export_segment(ctx, arg1);
+            }
+            else if (strcmp(cmd, "import-segment") == 0) {
+                if (!arg1 || !arg2) fprintf(stderr, "Usage: import-segment NAME FILE\n");
+                else {
+                    char spec[600];
+                    snprintf(spec, sizeof(spec), "%s=%s", arg1, arg2);
+                    cmd_import_segment(ctx, spec);
+                }
             }
             else if (strcmp(cmd, "setcpu") == 0) {
                 if (!arg1) {

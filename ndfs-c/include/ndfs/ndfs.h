@@ -26,5 +26,6 @@
 #include "boot_loader.h"
 #include "sintran.h"
 #include "sintran_identity.h"
+#include "sintran_segments.h"
 
 #endif /* NDFS_H */

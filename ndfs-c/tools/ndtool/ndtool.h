@@ -97,6 +97,10 @@ int cmd_release(ndtool_ctx_t *ctx);
 /* SINTRAN CPU number / CPU type on a system pack (sintran_identity.h). */
 int cmd_cpu_identity(ndtool_ctx_t *ctx);
 int cmd_set_cpu(ndtool_ctx_t *ctx, const char *spec, bool keep_stamp);
+/* SINTRAN segments (sintran_segments.h): list, export to a host file, import from one. */
+int cmd_segments(ndtool_ctx_t *ctx);
+int cmd_export_segment(ndtool_ctx_t *ctx, const char *which);
+int cmd_import_segment(ndtool_ctx_t *ctx, const char *spec);
 /* Friend commands. add/del take "OWNER:FRIEND[:RWACD]" / "OWNER:FRIEND";
  * list takes a user name or index. */
 int cmd_friend_add(ndtool_ctx_t *ctx, const char *arg);

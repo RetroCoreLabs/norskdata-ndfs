@@ -176,6 +176,14 @@ bool ndfs_sintran_decode_packed_name(uint16_t w0, uint16_t w1, uint16_t w2,
 int ndfs_sintran_find_segment_by_name(const uint8_t *buf, size_t size, const char *name);
 
 /**
+ * Build "USER/NAME:TYPE" for the first object owned by SYSTEM with this name and
+ * type (case-insensitive, the type's trailing quote trimmed). NDFS_ERR_NOT_FOUND
+ * when there is none. Shared by the identity and segment tools.
+ */
+ndfs_error_t ndfs_sintran_find_system_file(const ndfs_filesystem_t *fs, const char *name,
+                                           const char *want_type, char *path, size_t path_sz);
+
+/**
  * Byte offset of logical word address @p addr inside a segment's file.
  * `madr * 2048 + 2 * (addr - (logad & 077) * 1024)`. Returns -1 when the address
  * is outside the segment (segle pages from its base).

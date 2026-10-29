@@ -123,6 +123,21 @@ ndfs_error_t ndfs_read_file_parity(const ndfs_filesystem_t *fs,
 /** Free data returned by ndfs_read_file(). */
 void ndfs_free_data(uint8_t *data);
 
+/* ── Raw disk pages ───────────────────────────────────────────────────
+ * SINTRAN addresses its segment files by disk page (the kernel's DBLST /
+ * ABLPAGE tables plus the segment's MADR), not by NDFS file, so the SINTRAN
+ * segment tools read and write pages directly. A page is NDFS_PAGE_SIZE bytes. */
+
+/** Image size in whole pages. */
+uint32_t ndfs_get_total_pages(const ndfs_filesystem_t *fs);
+
+/** Copy disk page @p page into @p out (NDFS_PAGE_SIZE bytes). NDFS_ERR_OUT_OF_RANGE past the end. */
+ndfs_error_t ndfs_read_disk_page(const ndfs_filesystem_t *fs, uint32_t page, uint8_t *out);
+
+/** Overwrite disk page @p page with @p data (NDFS_PAGE_SIZE bytes). No allocation
+ *  check is made: the caller must know the page belongs to what it is writing. */
+ndfs_error_t ndfs_write_disk_page(ndfs_filesystem_t *fs, uint32_t page, const uint8_t *data);
+
 /* ── Write operations ────────────────────────────────────────────── */
 
 /**

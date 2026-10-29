@@ -25,6 +25,7 @@ extern void run_image_creator_tests(void);
 extern void run_boot_loader_tests(void);
 extern void run_sintran_tests(void);
 extern void run_sintran_identity_tests(void);
+extern void run_sintran_segments_tests(void);
 extern void run_write_comprehensive_tests(void);
 extern void run_fsck_tests(void);
 extern void run_alloc_rules_tests(void);
@@ -55,6 +56,7 @@ int main(void)
     run_boot_loader_tests();
     run_sintran_tests();
     run_sintran_identity_tests();
+    run_sintran_segments_tests();
     run_write_comprehensive_tests();
     run_fsck_tests();
     run_alloc_rules_tests();

@@ -17,6 +17,17 @@ All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndto
   `SINTRAN:DATA`. Nothing is written unless every target is reachable, and the result is read back.
   Replaces the DMAC session `)CLOAD S3IDPIT ... SYSNO/old new`. Derivation: NDInsight chapter
   `SINTRAN/OS/28-CPU-NUMBER-AND-TYPE-ON-DISK.md`. Python, TypeScript and C# ports: `docs/CPU-IDENTITY-PLAN.md`.
+* `ndfs_list_segments` / `ndfs_export_segment` / `ndfs_import_segment` (`sintran_segments.h`) and
+  `ndtool --segments`, `--export-segment NAME`, `--import-segment NAME=FILE` (shell: `segments`,
+  `export-segment`, `import-segment`). The segment table is read from `SEGFIL0:DATA`, the names from
+  the RT-loader records in `RTFIL:DATA`, and the disk page of every segment from the kernel's own
+  segment-file tables `DBLST` / `ABLPAGE` / `MASSNO` in the `S3IDPIT` copy, so all five segment files
+  are covered, including the absolute save file 4 and files on another disk unit (reported, not
+  touched). Export writes `NAME.seg` plus a `.txt` with the load address; import writes a host file
+  over a segment's pages with length checks. Checked on K and L packs: `S3IMAGE` = `SEGFIL0` pages
+  0-26, `S3SAVE` = `SINTRAN:DATA` pages 0-26 (byte-identical to `S3IMAGE`), `S3SDPIT` at disk page 28.
+* Library: `ndfs_get_total_pages`, `ndfs_read_disk_page`, `ndfs_write_disk_page` (raw page access,
+  the segment tools need pages, not files) and `ndfs_sintran_find_system_file`.
 
 ## Unreleased - 2026-10-21
 

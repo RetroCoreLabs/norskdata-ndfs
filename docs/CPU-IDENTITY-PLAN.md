@@ -1,21 +1,24 @@
-# Plan: change a SINTRAN pack's CPU number and CPU type offline
+# Plan: SINTRAN CPU identity and segments on a pack, in all four ports
 
-**Next:** port `sintran_identity` to ndfs-py.
+**Next:** port `sintran_identity` and `sintran_segments` to ndfs-py.
 
 Specification and all measured facts: NDInsight `SINTRAN/OS/28-CPU-NUMBER-AND-TYPE-ON-DISK.md`
-(sibling repository). The C implementation is `ndfs-c/src/sintran_identity.c` with
-`ndtool --cpu-identity` / `--set-cpu`, proven by booting patched copies of a K and an L pack on
-2026-10-29 (chapter 28 §9). This file holds only the work that is still open; finished items are
-removed, not ticked.
+and chapters 11 and 22 (sibling repository). The C implementation is `ndfs-c/src/sintran_identity.c`
+(`ndtool --cpu-identity` / `--set-cpu`, proven by booting patched copies of a K and an L pack on
+2026-10-29) and `ndfs-c/src/sintran_segments.c` (`ndtool --segments` / `--export-segment` /
+`--import-segment`, checked against the file view on the same packs). This file holds only the
+work that is still open; finished items are removed, not ticked.
 
 ## Order of work
 
-1. **ndfs-py**: port `sintran_identity` behaviour for behaviour into `src/ndfs/sintran_identity.py`
-   (symbol parsing, SIXBIT name decode, name-record scan, segment-table entry, per-word file
-   check, both copies, 33CPN/33CPU rewrite with parity, stamp clear, read-back), tests mirroring
-   `ndfs-c/tests/test_sintran_identity.c`, CLI exposure if the Python CLI has one.
-2. **ndfs-ts**: same port and tests; the nd100x web front end (`template-glass/js`) gets a
-   read-only view first, write once the C path has been used on a real machine for a while.
+1. **ndfs-py**: port `sintran_identity` and `sintran_segments` behaviour for behaviour into
+   `src/ndfs/sintran_identity.py` and `sintran_segments.py` (symbol parsing, SIXBIT name decode,
+   name-record scan, segment-table entry, DBLST/ABLPAGE/MASSNO segment-file bases incl. the file-4
+   start-up rule, per-word file check, both DPIT copies, 33CPN/33CPU rewrite with parity, stamp
+   clear, read-back; list / export / import by disk page), tests mirroring the two C test files,
+   CLI exposure if the Python CLI has one.
+2. **ndfs-ts**: same ports and tests; the nd100x web front end (`template-glass/js`) gets a
+   read-only segment list and identity view first, write once the C path has been used for a while.
 3. **C#**
    - `RetroIO.Storage.Ndfs` (sibling repository RetroIO, `src/RetroIO.Storage.Ndfs`): validate the
      existing `MasterBlock` extended-info checksum (additive, kernel-verified), `ClearEnteredDirectory`
@@ -29,6 +32,12 @@ removed, not ticked.
    (the PROM default is already fixed: signature off until an identity variable is set).
 5. **On a booted patched pack** (any emulator): type `@LIST-TITLE` and `@ENTER-DIRECTORY` of a
    second pack to close the two "not done" items in chapter 28 §9.
+6. **Segment files 1-3 on a real pack**: no pack on hand defines them (DBLST 1-3 are 0 on K and L).
+   Define one on a booted copy (`@ALLOCATE-FILE` + RT-loader `*DEFINE-SEGMENT-FILE Y Y 1 ...`),
+   load a segment onto it, then check `ndtool --segments` finds it from DBLST(1). Until then the
+   file 1-3 path is covered by the synthetic test only.
+7. **Import proven by boot**: import an exported, modified `S3SDPIT` into a copy and boot it, the
+   way `--set-cpu` was proven; today import is checked by read-back and by the file view only.
 
 ## Open questions carried from chapter 28
 
