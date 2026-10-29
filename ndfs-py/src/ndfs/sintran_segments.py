@@ -74,7 +74,7 @@ class Segment:
     sgsta: int = 0
     bpagl: int = 0
     segfile: int = 0                #: (flag >> 13) & 7
-    ok5: bool = False               #: flag bit 0: has a disk address
+    ok5: bool = False               #: flag bit 0 (5OK): loaded in memory; says nothing about disk
     memory_only: bool = False       #: SEGLE 0: no pages on disk (S3DPIT, S3RPIT ...)
     disk_page: int = -1             #: first disk page, -1 when not on a known local file
 
@@ -278,12 +278,15 @@ def list_segments(fs: "NdfsFileSystem") -> SegmentList:
 
     _read_segfile_tables(fs, seg, out, idpit)
 
-    # Disk page of every segment with a disk copy on a known, local segment file.
+    # Disk page of every segment with pages on a known, local segment file. The 5OK bit
+    # is NOT a condition: it means "loaded in memory" (SEGIN sets it at run time), and a
+    # segment the RT-loader has just written has it clear while its pages are on disk
+    # (measured 2026-10-29: segment 101B on a fresh segment file 1, FLAG 020000).
     for s in out.segments:
         sf = out.segfiles[s.segfile]
         if s.memory_only or s.segle == 0:
             continue
-        if not s.ok5 or not sf.defined or not sf.on_this_disk:
+        if not sf.defined or not sf.on_this_disk:
             continue
         s.disk_page = sf.base_page + s.madr
     return out

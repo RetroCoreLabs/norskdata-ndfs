@@ -1,6 +1,6 @@
 # Plan: SINTRAN CPU identity and segments on a pack, in all four ports
 
-**Next:** a segment on segment file 1 to 3 (item 1); everything else is proven (chapter 28 §9).
+**Next:** multi-unit SMD validation (item 1); every ndfs-side proof is in (chapter 28 §9).
 
 Specification and all measured facts: NDInsight `SINTRAN/OS/28-CPU-NUMBER-AND-TYPE-ON-DISK.md`
 (§8.2a lists where it is implemented) and chapters 11 and 22 (sibling repository). Done and
@@ -10,15 +10,17 @@ fix. This file holds only the work that is still open; finished items are remove
 
 ## Order of work
 
-1. **Segment files 1-3 on a real pack**: no pack on hand defines them (DBLST 1-3 are 0 on K and L).
-   Define one on a booted copy (`@ALLOCATE-FILE` + RT-loader `*DEFINE-SEGMENT-FILE Y Y 1 ...`),
-   load a segment onto it, then check `ndtool --segments` finds it from DBLST(1). Until then the
-   file 1-3 path is covered by the synthetic test only.
-2. **`@ENTER-DIRECTORY` of a released pack on a second SMD unit**: on 2026-10-29 the command never
-   returned in RetroCore (unit 1, L copy, six minutes, emulator alive). The stamp verdicts are in
-   (boot refuses a pack stamped by another system, `@ENTER-DIRECTORY` refuses one too, a released
-   pack boots clean), so this is an emulator / multi-unit question to take to RetroCore, not an
-   ndfs one.
+1. **SINTRAN with more than one SMD unit is not validated in the emulators.** On 2026-10-29
+   `@ENTER-DIRECTORY PACK-TWO,DISC-75MB-1,1` of a released L copy on unit 1 never returned in
+   RetroCore (six minutes, emulator alive), while unit 2's stamp check answered at once. Ronny's
+   read: probably bugs in the SMD disk controller for unit numbers other than 0, and SINTRAN with
+   several disks has never been checked. The work, in this order:
+   - unit tests that read and write across several SMD units, on temporary copies of a valid
+     pack (never the originals), first in nd100x, then the same cases ported to the C# RetroCore
+     controller;
+   - then the TPE disk tools on a booted system with two or three units as the real-system check;
+   - then repeat the `@ENTER-DIRECTORY` of a released pack on unit 1 (the one proof still open
+     from chapter 28 §9).
 
 ## Open questions carried from chapter 28
 

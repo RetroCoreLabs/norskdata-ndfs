@@ -62,7 +62,7 @@ export interface Segment {
   bpagl: number;
   /** (flag >> 13) & 7 */
   segfile: number;
-  /** flag bit 0: has a disk address. */
+  /** flag bit 0 (5OK): loaded in memory; says nothing about pages on disk. */
   ok5: boolean;
   /** SEGLE 0: no pages on disk (S3DPIT, S3RPIT ...). */
   memoryOnly: boolean;
@@ -283,11 +283,14 @@ export function listSegments(fs: NdfsFileSystem): SegmentList {
 
   readSegfileTables(fs, seg, out, idpit);
 
-  // Disk page of every segment with a disk copy on a known, local segment file.
+  // Disk page of every segment with pages on a known, local segment file. The 5OK bit is
+  // NOT a condition: it means "loaded in memory" (SEGIN sets it at run time), and a segment
+  // the RT-loader has just written has it clear while its pages are on disk (measured
+  // 2026-10-29: segment 101B on a fresh segment file 1, FLAG 020000).
   for (const s of out.segments) {
     const sf = out.segfiles[s.segfile];
     if (s.memoryOnly || s.segle === 0) continue;
-    if (!s.ok5 || !sf.defined || !sf.onThisDisk) continue;
+    if (!sf.defined || !sf.onThisDisk) continue;
     s.diskPage = sf.basePage + s.madr;
   }
   return out;

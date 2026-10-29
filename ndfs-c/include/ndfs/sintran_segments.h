@@ -85,9 +85,11 @@ typedef struct {
     char     name[NDFS_SEGNAME_MAX + 1]; /**< RT-loader name, or "" when no record names it. */
     int      segli, prese, logad, segle, madr, flag, sgsta, bpagl;
     int      segfile;           /**< (flag >> 13) & 7. */
-    bool     ok5;               /**< flag bit 0. */
+    bool     ok5;               /**< flag bit 0 (5OK): the segment is loaded in memory, set by SEGIN at run
+                                     time. Reported only; it says nothing about pages on disk (a segment the
+                                     RT-loader just wrote has it clear). */
     bool     memory_only;       /**< SEGLE 0: no pages, no disk copy. */
-    long     disk_page;         /**< First disk page of the segment (needs 5OK and a known segment file), or -1. */
+    long     disk_page;         /**< First disk page of the segment (needs pages and a known local segment file), or -1. */
 } ndfs_segment_t;
 
 /** The whole picture of a pack's segments. */

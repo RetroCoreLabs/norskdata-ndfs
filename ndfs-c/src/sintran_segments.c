@@ -261,12 +261,18 @@ ndfs_error_t ndfs_list_segments(const ndfs_filesystem_t *fs, ndfs_segment_list_t
 
     read_segfile_tables(fs, seg, seg_size, out, idpit_index);
 
-    /* Disk page of every segment with a disk copy on a known, local segment file. */
+    /* Disk page of every segment with pages on a known, local segment file. The 5OK bit
+     * is NOT a condition: it means "loaded in memory" (set by SEGIN at run time, see
+     * NDInsight SEGMENTS-INTRO-AND-DEEP-DIVE), and a segment the RT-loader has just
+     * written has it clear while its pages are on disk. Measured 2026-10-29: segment
+     * 101B loaded onto a fresh segment file 1 had FLAG 020000 and its code at
+     * DBLST(1)/ABLPAGE + MADR. System segments show 5OK only because the table image
+     * was written while they were loaded. */
     for (n = 0; n < out->count; n++) {
         ndfs_segment_t *s = &out->segments[n];
         const ndfs_segfile_t *sf = &out->segfiles[s->segfile];
         if (s->memory_only || s->segle == 0) continue;
-        if (!s->ok5 || !sf->defined || !sf->on_this_disk) continue;
+        if (!sf->defined || !sf->on_this_disk) continue;
         s->disk_page = sf->base_page + s->madr;
     }
 

@@ -80,7 +80,7 @@ class DpitCopy:
     name: str
     role: str                       #: "image" or "save"
     segment_number: int = -1        #: from the name records; -1 when unresolved
-    present: bool = False           #: table entry has pages, the 5OK bit and covers SYSNO
+    present: bool = False           #: table entry has pages and covers SYSNO
     logad: int = 0
     segle: int = 0
     madr: int = 0
@@ -412,10 +412,10 @@ def read_cpu_identity(fs: "NdfsFileSystem") -> CpuIdentity:
         c.logad, c.segle, c.madr, c.flag = logad, segle, madr, flag
         c.segment_file = (flag >> 13) & 7
         c.file_path = ""
-        # Usable: a length, a disk address (the 5OK bit) and a range that covers
-        # SYSNO. The logical base comes from the entry itself, not from a constant.
-        c.present = (segle > 0 and (flag & 1) != 0
-                     and segment_word_offset(logad, segle, madr, out.sym.sysno) >= 0)
+        # Usable: a length and a range that covers SYSNO. The logical base comes from
+        # the entry itself, not from a constant. The 5OK bit is not required: it means
+        # "loaded in memory" (SEGIN sets it at run time), not "has pages on disk".
+        c.present = segle > 0 and segment_word_offset(logad, segle, madr, out.sym.sysno) >= 0
         if not c.present:
             continue
         path = _segment_file_path(fs, c.segment_file, segfil_path)

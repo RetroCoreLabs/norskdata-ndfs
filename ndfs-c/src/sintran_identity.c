@@ -422,9 +422,10 @@ ndfs_error_t ndfs_read_cpu_identity(const ndfs_filesystem_t *fs, ndfs_cpu_identi
         c->logad = e.logad; c->segle = e.segle; c->madr = e.madr; c->flag = e.flag;
         c->segment_file = (e.flag >> 13) & 7;
         c->file_path[0] = '\0';
-        /* Usable: a length, a disk address (the 5OK bit) and a range that covers SYSNO.
-         * The logical base comes from the entry itself, not from a constant. */
-        c->present = (e.segle > 0) && (e.flag & 1) != 0 &&
+        /* Usable: a length and a range that covers SYSNO. The logical base comes from
+         * the entry itself, not from a constant. The 5OK bit is not required: it means
+         * "loaded in memory" (SEGIN sets it at run time), not "has pages on disk". */
+        c->present = (e.segle > 0) &&
                      ndfs_sintran_segment_word_offset(e.logad, e.segle, e.madr, out->sym.sysno) >= 0;
         if (!c->present) continue;
         if (segment_file_path(fs, c->segment_file, segfil_path, c->file_path, sizeof(c->file_path)) != NDFS_OK) {

@@ -16,6 +16,12 @@ All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndto
   `sintran-segments.ts` (`listSegments`, `findSegment`, `exportSegment`, `importSegment`,
   `collectSegmentNames`); `NdfsFileSystem` gains `releaseDirectory`, `readDiskPage`, `writeDiskPage`
   and `totalPages`. Tests `tests/sintran-identity.test.ts`, `tests/sintran-segments.test.ts`.
+* Fixed the same day in all three ports: the segment lister required the `5OK` flag bit before it
+  gave a segment its disk page. `5OK` means "loaded in memory" (SEGIN sets it at run time), and a
+  segment the RT-loader has just written onto a fresh segment file 1 has it clear while its pages
+  are on disk (measured on a booted K pack: entry 101B, FLAG 020000, code at DBLST(1)/ABLPAGE +
+  MADR). The bit is still reported, no longer a condition; the synthetic user segment in the tests
+  now has the loader's flag word.
 * Checked against copies of the K-100 and L2-100 packs: the Python and TypeScript read views match
   `ndtool --cpu-identity` / `--segments` word for word, a pack changed to 21238 with either writer
   reads back as 21238 in ndtool, and the images written by the two ports are byte-identical.

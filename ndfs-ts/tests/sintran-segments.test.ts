@@ -73,7 +73,9 @@ function buildPack(withSymbols: boolean): { fs: NdfsFileSystem; sf0: number; sf1
   putSegEntry(seg, TABLE_PAGE, SEG_IDPIT, DPIT_LOGAD, 4, IDPIT_MADR, 0o000111, 0o162000);
   putSegEntry(seg, TABLE_PAGE, SEG_SDPIT, DPIT_LOGAD, 4, SDPIT_MADR, 0o000111, 0o162000);
   putSegEntry(seg, TABLE_PAGE, SEG_SAVE4, 0o000030, 2, SAVE4_MADR, 0o100111, 0o162000);
-  putSegEntry(seg, TABLE_PAGE, SEG_USER, 0o000060, 3, USER_MADR, 0o020111, 0o162000);
+  // A segment the RT-loader wrote onto segment file 1: FLAG 020000, 5OK clear (it means
+  // "loaded in memory", not "on disk"), as measured on 2026-10-29.
+  putSegEntry(seg, TABLE_PAGE, SEG_USER, 0o000060, 3, USER_MADR, 0o020000, 0o162000);
 
   // Recognisable content: every page of a segment carries its number and page index.
   for (let p = 0; p < 4; p++) putWord(seg, (FS_MADR + p) * PAGE, 0x5300 | p);

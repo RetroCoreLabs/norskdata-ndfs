@@ -78,7 +78,9 @@ def build_pack(with_symbols: bool) -> Tuple[NdfsFileSystem, int, int]:
     put_seg_entry(seg, TABLE_PAGE, SEG_IDPIT, DPIT_LOGAD, 4, IDPIT_MADR, 0o000111, 0o162000)
     put_seg_entry(seg, TABLE_PAGE, SEG_SDPIT, DPIT_LOGAD, 4, SDPIT_MADR, 0o000111, 0o162000)
     put_seg_entry(seg, TABLE_PAGE, SEG_SAVE4, 0o000030, 2, SAVE4_MADR, 0o100111, 0o162000)
-    put_seg_entry(seg, TABLE_PAGE, SEG_USER, 0o000060, 3, USER_MADR, 0o020111, 0o162000)
+    # A segment the RT-loader wrote onto segment file 1: FLAG 020000, 5OK clear (it means
+    # "loaded in memory", not "on disk"), as measured on 2026-10-29.
+    put_seg_entry(seg, TABLE_PAGE, SEG_USER, 0o000060, 3, USER_MADR, 0o020000, 0o162000)
 
     # Recognisable content: every page of a segment carries its number and page index.
     for p in range(4):

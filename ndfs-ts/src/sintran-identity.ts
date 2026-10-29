@@ -78,7 +78,7 @@ export interface DpitCopy {
   role: 'image' | 'save';
   /** From the name records; -1 when unresolved. */
   segmentNumber: number;
-  /** Table entry has pages, the 5OK bit and covers SYSNO. */
+  /** Table entry has pages and covers SYSNO. */
   present: boolean;
   logad: number;
   segle: number;
@@ -444,9 +444,10 @@ export function readCpuIdentity(fs: NdfsFileSystem): CpuIdentity {
     c.flag = e.flag;
     c.segmentFile = (e.flag >> 13) & 7;
     c.filePath = '';
-    // Usable: a length, a disk address (the 5OK bit) and a range that covers SYSNO.
-    // The logical base comes from the entry itself, not from a constant.
-    c.present = e.segle > 0 && (e.flag & 1) !== 0 && segmentWordOffset(e.logad, e.segle, e.madr, out.sym.sysno) >= 0;
+    // Usable: a length and a range that covers SYSNO. The logical base comes from the entry
+    // itself, not from a constant. The 5OK bit is not required: it means "loaded in memory"
+    // (SEGIN sets it at run time), not "has pages on disk".
+    c.present = e.segle > 0 && segmentWordOffset(e.logad, e.segle, e.madr, out.sym.sysno) >= 0;
     if (!c.present) continue;
     const path = segmentFilePath(fs, c.segmentFile, segfilPath);
     if (path === null) continue;

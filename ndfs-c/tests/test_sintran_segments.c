@@ -143,7 +143,9 @@ static ndfs_error_t build_pack(ndfs_filesystem_t **out_fs, bool with_symbols,
     put_seg_entry(seg, TABLE_PAGE, SEG_IDPIT,  DPIT_LOGAD, 4, IDPIT_MADR, 0000111, 0162000);
     put_seg_entry(seg, TABLE_PAGE, SEG_SDPIT,  DPIT_LOGAD, 4, SDPIT_MADR, 0000111, 0162000);
     put_seg_entry(seg, TABLE_PAGE, SEG_SAVE4,  0000030, 2, SAVE4_MADR, 0100111, 0162000);
-    put_seg_entry(seg, TABLE_PAGE, SEG_USER,   0000060, 3, USER_MADR,  0020111, 0162000);
+    /* A segment the RT-loader wrote onto segment file 1: FLAG 020000, the 5OK bit clear
+     * (it means "loaded in memory", not "on disk"), as measured on 2026-10-29. */
+    put_seg_entry(seg, TABLE_PAGE, SEG_USER,   0000060, 3, USER_MADR,  0020000, 0162000);
 
     /* Recognisable content: every page of a segment carries its number and page index. */
     for (p = 0; p < 4; p++) { put_word(seg, (size_t)(FS_MADR + p) * PAGE, 0x5300 | p); }
