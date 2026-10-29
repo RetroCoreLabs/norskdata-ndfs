@@ -1,6 +1,6 @@
 # Plan: SINTRAN CPU identity and segments on a pack, in all four ports
 
-**Next:** the boot-side proofs (items 1 to 3), which need a running machine.
+**Next:** a segment on segment file 1 to 3 (item 1); everything else is proven (chapter 28 §9).
 
 Specification and all measured facts: NDInsight `SINTRAN/OS/28-CPU-NUMBER-AND-TYPE-ON-DISK.md`
 (§8.2a lists where it is implemented) and chapters 11 and 22 (sibling repository). Done and
@@ -10,14 +10,15 @@ fix. This file holds only the work that is still open; finished items are remove
 
 ## Order of work
 
-1. **On a booted patched pack** (any emulator): type `@LIST-TITLE` and `@ENTER-DIRECTORY` of a
-   second pack to close the two "not done" items in chapter 28 §9.
-2. **Segment files 1-3 on a real pack**: no pack on hand defines them (DBLST 1-3 are 0 on K and L).
+1. **Segment files 1-3 on a real pack**: no pack on hand defines them (DBLST 1-3 are 0 on K and L).
    Define one on a booted copy (`@ALLOCATE-FILE` + RT-loader `*DEFINE-SEGMENT-FILE Y Y 1 ...`),
    load a segment onto it, then check `ndtool --segments` finds it from DBLST(1). Until then the
    file 1-3 path is covered by the synthetic test only.
-3. **Import proven by boot**: import an exported, modified `S3SDPIT` into a copy and boot it, the
-   way `--set-cpu` was proven; today import is checked by read-back and by the file view only.
+2. **`@ENTER-DIRECTORY` of a released pack on a second SMD unit**: on 2026-10-29 the command never
+   returned in RetroCore (unit 1, L copy, six minutes, emulator alive). The stamp verdicts are in
+   (boot refuses a pack stamped by another system, `@ENTER-DIRECTORY` refuses one too, a released
+   pack boots clean), so this is an emulator / multi-unit question to take to RetroCore, not an
+   ndfs one.
 
 ## Open questions carried from chapter 28
 
