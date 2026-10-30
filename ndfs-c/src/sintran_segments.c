@@ -46,7 +46,7 @@ int ndfs_sintran_collect_segment_names(const uint8_t *buf, size_t size,
                                              (uint16_t)word_be(buf, o + 4), decoded, sizeof(decoded)))
             continue;
         if (names[segno][0] == '\0') {
-            strcpy(names[segno], decoded);
+            snprintf(names[segno], sizeof(names[segno]), "%s", decoded);
             found++;
         }
     }
@@ -117,8 +117,7 @@ static void label_file_at_page(const ndfs_filesystem_t *fs, long page, char *pat
         snprintf(candidate, sizeof(candidate), "%s/%s:%s", objs[i].user_name, objs[i].object_name, type);
         if (ndfs_get_file_blocks(fs, candidate, &blocks, &nb) != NDFS_OK) continue;
         if (nb > 0 && blocks[0] == (uint32_t)page) {
-            strncpy(path, candidate, path_sz - 1);
-            path[path_sz - 1] = '\0';
+            snprintf(path, path_sz, "%s", candidate);
             free(blocks);
             break;
         }
@@ -242,7 +241,7 @@ ndfs_error_t ndfs_list_segments(const ndfs_filesystem_t *fs, ndfs_segment_list_t
     if (ndfs_sintran_find_system_file(fs, "RTFIL", "DATA", path, sizeof(path)) == NDFS_OK &&
         ndfs_read_file(fs, path, &rt, &rt_size) == NDFS_OK) {
         if (ndfs_sintran_collect_segment_names(rt, rt_size, names) > 0)
-            strncpy(out->names_path, path, sizeof(out->names_path) - 1);
+            snprintf(out->names_path, sizeof(out->names_path), "%s", path);
         ndfs_free_data(rt);
     }
     if (out->names_path[0] == '\0' && ndfs_sintran_collect_segment_names(seg, seg_size, names) > 0)
@@ -254,7 +253,7 @@ ndfs_error_t ndfs_list_segments(const ndfs_filesystem_t *fs, ndfs_segment_list_t
         ndfs_segment_t s;
         read_entry(seg, out->segment_table_page, n, &s);
         if (s.segle == 0 && s.madr == 0 && s.logad == 0 && names[n][0] == '\0') continue;
-        strcpy(s.name, names[n]);
+        snprintf(s.name, sizeof(s.name), "%s", names[n]);
         if (strcmp(s.name, NDFS_SEGNAME_IMAGE_DPIT) == 0) idpit_index = out->count;
         out->segments[out->count++] = s;
     }

@@ -10,6 +10,7 @@
 #include "endian_util.h"
 #include "ndfs_name.h"
 #include "boot_blobs.h"
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -189,7 +190,7 @@ void ndfs_image_options_init(ndfs_image_options_t *opts)
     if (!opts) return;
     memset(opts, 0, sizeof(*opts));
     opts->template_type = NDFS_TMPL_FLOPPY_360KB;
-    strcpy(opts->directory_name, "NDFS-DISK");
+    snprintf(opts->directory_name, sizeof(opts->directory_name), "%s", "NDFS-DISK");
     opts->include_extended_info = false;
     opts->system_number = 0;
     opts->flag_word = 0;
@@ -393,7 +394,7 @@ ndfs_error_t ndfs_create_image(ndfs_filesystem_t **out_fs,
     ndfs_bp_to_bytes(&bp, img + (size_t)user_index * NDFS_PAGE_SIZE, 0);
 
     ndfs_ue_init(&ue);
-    strcpy(ue.user_name, "SYSTEM");
+    snprintf(ue.user_name, sizeof(ue.user_name), "%s", "SYSTEM");
     ue.user_index = 0;
     ue.pages_reserved = quota;
     ue.pages_used = 1;   /* the object data page, charged to its owner like SINTRAN does (NDFS-ALLOCATION-RULES.md section 7) */

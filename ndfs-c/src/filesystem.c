@@ -864,6 +864,24 @@ static ndfs_error_t read_subindexed_data(const struct ndfs_filesystem *fs,
     return NDFS_OK;
 }
 
+/* The most bytes a file of this pointer type can hold. bytes_in_file comes from the
+ * image, so it is checked against this before it is used as an allocation size: a
+ * damaged or hostile entry can claim up to 4 GB. Contiguous files are limited by
+ * their page count, indexed files by one index block (512 pages), sub-indexed
+ * files by 512 index blocks of 512 pages. */
+static uint64_t max_object_bytes(const ndfs_object_entry_t *obj)
+{
+    uint64_t pages;
+
+    switch (obj->file_pointer.type) {
+        case NDFS_PTR_CONTIGUOUS: pages = obj->pages_in_file; break;
+        case NDFS_PTR_INDEXED:    pages = NDFS_MAX_OBJECT_FILE_PTRS; break;
+        case NDFS_PTR_SUBINDEXED: pages = (uint64_t)NDFS_MAX_OBJECT_FILE_PTRS * NDFS_MAX_OBJECT_FILE_PTRS; break;
+        default:                  pages = 0; break;
+    }
+    return pages * NDFS_PAGE_SIZE;
+}
+
 static ndfs_error_t read_object_data(const struct ndfs_filesystem *fs,
                                      const ndfs_object_entry_t *obj,
                                      uint8_t **out_data, size_t *out_size)
@@ -875,6 +893,8 @@ static ndfs_error_t read_object_data(const struct ndfs_filesystem *fs,
         *out_size = 0;
         return NDFS_OK;
     }
+
+    if ((uint64_t)obj->bytes_in_file > max_object_bytes(obj)) return NDFS_ERR_CORRUPT;
 
     result = (uint8_t *)calloc(obj->bytes_in_file, 1);
     if (!result) return NDFS_ERR_ALLOC;
@@ -3114,7 +3134,7 @@ static int resolve_user_ref(const struct ndfs_filesystem *fs, const char *ref)
         if (*p < '0' || *p > '9') { numeric = false; break; }
     }
     if (numeric) {
-        long v = atol(ref);
+        long v = strtol(ref, NULL, 10); /* digits only; overflow saturates, then fails the range test */
         if (v >= 0 && v <= 255) {
             int slot = find_user_by_index(fs, (uint8_t)v);
             if (slot >= 0) return slot;
@@ -3140,7 +3160,7 @@ static ndfs_error_t resolve_friend_index(const struct ndfs_filesystem *fs,
         if (*p < '0' || *p > '9') { numeric = false; break; }
     }
     if (numeric) {
-        long v = atol(ref);
+        long v = strtol(ref, NULL, 10); /* digits only; overflow saturates, then fails the range test */
         if (v < 0 || v > 255) return NDFS_ERR_INVALID_ARG;
         *out_index = (uint8_t)v;
         return NDFS_OK;
@@ -4800,6 +4820,38 @@ ndfs_error_t ndfs_fsck_undo(ndfs_filesystem_t *fs, const uint8_t *undo, size_t s
     return cache_flush_all(fs);
 }
 
+/* Append printf-style text to a growing buffer. The size is measured first, so a
+ * single long item can never run past the end. On failure the buffer is freed and
+ * *buf is set to NULL, so the caller leaks nothing. */
+static bool report_appendf(char **buf, size_t *cap, size_t *len, const char *fmt, ...)
+{
+    va_list ap;
+    int n;
+    size_t need;
+
+    va_start(ap, fmt);
+    n = vsnprintf(NULL, 0, fmt, ap);
+    va_end(ap);
+    if (n < 0) { free(*buf); *buf = NULL; return false; }
+
+    need = *len + (size_t)n + 1;
+    if (need > *cap) {
+        size_t ncap = *cap;
+        char *nb;
+        while (ncap < need) ncap *= 2;
+        nb = (char *)realloc(*buf, ncap);
+        if (!nb) { free(*buf); *buf = NULL; return false; }
+        *buf = nb;
+        *cap = ncap;
+    }
+
+    va_start(ap, fmt);
+    vsnprintf(*buf + *len, *cap - *len, fmt, ap);
+    va_end(ap);
+    *len += (size_t)n;
+    return true;
+}
+
 ndfs_error_t ndfs_generate_report(const ndfs_filesystem_t *fs, char **out_report)
 {
     char *report;
@@ -4808,7 +4860,6 @@ ndfs_error_t ndfs_generate_report(const ndfs_filesystem_t *fs, char **out_report
     uint32_t total_pages, used_pages, free_pages;
     size_t user_count = 0;
     size_t i;
-    int n;
 
     if (!fs || !out_report) return NDFS_ERR_NULL_PTR;
 
@@ -4824,13 +4875,7 @@ ndfs_error_t ndfs_generate_report(const ndfs_filesystem_t *fs, char **out_report
     }
 
 #define APPEND(...) do { \
-    n = snprintf(report + len, cap - len, __VA_ARGS__); \
-    if (n > 0) len += (size_t)n; \
-    if (len + 256 > cap) { \
-        cap *= 2; \
-        report = (char *)realloc(report, cap); \
-        if (!report) return NDFS_ERR_ALLOC; \
-    } \
+    if (!report_appendf(&report, &cap, &len, __VA_ARGS__)) return NDFS_ERR_ALLOC; \
 } while(0)
 
     APPEND("NDFS Filesystem Report\n");

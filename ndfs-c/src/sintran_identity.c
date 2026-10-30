@@ -259,7 +259,7 @@ static void resolve_segment_names(const ndfs_filesystem_t *fs, const uint8_t *se
             out->copies[i].segment_number = ndfs_sintran_find_segment_by_name(rt, rt_size, out->copies[i].name);
         ndfs_free_data(rt);
         if (out->copies[0].segment_number > 0 && out->copies[1].segment_number > 0) {
-            strncpy(out->names_path, path, sizeof(out->names_path) - 1);
+            snprintf(out->names_path, sizeof(out->names_path), "%s", path);
             return;
         }
     }
@@ -280,8 +280,7 @@ static ndfs_error_t segment_file_path(const ndfs_filesystem_t *fs, int segment_f
 {
     switch (segment_file) {
         case 0:
-            strncpy(path, segfil_path, path_sz - 1);
-            path[path_sz - 1] = '\0';
+            snprintf(path, path_sz, "%s", segfil_path);
             return NDFS_OK;
         case 4:
             return ndfs_sintran_find_system_file(fs, "SINTRAN", "DATA", path, path_sz);
@@ -355,8 +354,8 @@ ndfs_error_t ndfs_read_cpu_identity(const ndfs_filesystem_t *fs, ndfs_cpu_identi
     out->segment_table_page = -1;
     out->sym.sysno = out->sym.hwinf = out->sym.revle = out->sym.fcpun =
     out->sym.cpn33 = out->sym.cpu33 = out->sym.inibu = -1;
-    strcpy(out->copies[0].name, NDFS_SEGNAME_IMAGE_DPIT); out->copies[0].role = "image";
-    strcpy(out->copies[1].name, NDFS_SEGNAME_SAVE_DPIT);  out->copies[1].role = "save";
+    snprintf(out->copies[0].name, sizeof(out->copies[0].name), "%s", NDFS_SEGNAME_IMAGE_DPIT); out->copies[0].role = "image";
+    snprintf(out->copies[1].name, sizeof(out->copies[1].name), "%s", NDFS_SEGNAME_SAVE_DPIT); out->copies[1].role = "save";
     for (i = 0; i < 2; i++) {
         out->copies[i].segment_number = -1;
         out->copies[i].sysno = out->copies[i].fcpun = out->copies[i].cpu_type = out->copies[i].revle = -1;
