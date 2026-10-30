@@ -44,6 +44,9 @@ typedef struct {
 } ndtool_ctx_t;
 
 /* Helper: convert NDFS name to host filename (: -> ., optional lowercase) */
+/* Parse an unsigned decimal number. Returns false for empty text, a sign, trailing
+ * characters or a value that does not fit in 32 bits; *out is then untouched. */
+bool ndtool_parse_u32(const char *text, uint32_t *out);
 void ndtool_to_host_name(const char *ndfs_name, char *out, size_t out_len, bool lowercase);
 
 /* Helper: convert host filename to NDFS name (. -> :, uppercase) */

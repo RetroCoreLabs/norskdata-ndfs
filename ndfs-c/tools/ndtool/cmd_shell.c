@@ -4,6 +4,12 @@
  * SPDX-License-Identifier: MIT
  */
 
+/* Expose POSIX mkdtemp()/rmdir() under strict -std=c99 (must precede any
+ * system header include). */
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "ndtool.h"
 #include "parity.h"
 
@@ -12,6 +18,20 @@
 #include <string.h>
 #include <ctype.h>
 #include <sys/stat.h>
+
+#ifdef _WIN32
+#include <io.h>
+#include <direct.h>
+#define rmdir _rmdir
+/* No mkdtemp on Windows: make a unique name, then create the directory. */
+static char *mkdtemp(char *tmpl)
+{
+    if (!_mktemp(tmpl)) return NULL;
+    return _mkdir(tmpl) == 0 ? tmpl : NULL;
+}
+#else
+#include <unistd.h>
+#endif
 
 /* Portable case-insensitive string compare. */
 static int ci_equal(const char *a, const char *b)
@@ -234,6 +254,7 @@ static void shell_edit(ndtool_ctx_t *ctx, const char *path)
     uint8_t *data = NULL;
     size_t size = 0;
     ndfs_error_t err;
+    char tmp_dir[] = "/tmp/ndtool_XXXXXX";
     char tmp_path[512];
     char host_name[64];
     const char *editor;
@@ -265,18 +286,30 @@ static void shell_edit(ndtool_ctx_t *ctx, const char *path)
 
     /* Build temp file path */
     ndtool_to_host_name(path, host_name, sizeof(host_name), true);
-    /* Replace / with _ for flat temp filename */
+    /* Keep only characters that are harmless in a file name and in the shell
+     * command line below. A name read from the image can hold anything. */
     {
         size_t k;
         for (k = 0; host_name[k]; k++) {
-            if (host_name[k] == '/') host_name[k] = '_';
+            unsigned char c = (unsigned char)host_name[k];
+            if (!(isalnum(c) || c == '.' || c == '-' || c == '_')) host_name[k] = '_';
         }
+        if (host_name[0] == '\0') strcpy(host_name, "file");
     }
-    snprintf(tmp_path, sizeof(tmp_path), "/tmp/ndtool_%s", host_name);
+    /* A private directory with a random name (mode 0700) so no other user can
+     * pre-create the file or a symlink in its place. */
+    if (!mkdtemp(tmp_dir)) {
+        fprintf(stderr, "Error: cannot create a temporary directory\n");
+        ndfs_free_data(data);
+        return;
+    }
+    snprintf(tmp_path, sizeof(tmp_path), "%s/%s", tmp_dir, host_name);
 
     /* Write to temp file */
     if (ndtool_write_local_file(tmp_path, data, size) != 0) {
         ndfs_free_data(data);
+        remove(tmp_path);
+        rmdir(tmp_dir);
         return;
     }
     ndfs_free_data(data);
@@ -292,7 +325,12 @@ static void shell_edit(ndtool_ctx_t *ctx, const char *path)
 
     /* Open editor */
     printf("Opening '%s' in editor...\n", path);
-    snprintf(cmd_buf, sizeof(cmd_buf), "%s \"%s\"", editor, tmp_path);
+    if (snprintf(cmd_buf, sizeof(cmd_buf), "%s \"%s\"", editor, tmp_path) >= (int)sizeof(cmd_buf)) {
+        fprintf(stderr, "Error: editor command is too long\n");
+        remove(tmp_path);
+        rmdir(tmp_dir);
+        return;
+    }
     ret = system(cmd_buf);
 
     if (ret != 0) {
@@ -306,6 +344,7 @@ static void shell_edit(ndtool_ctx_t *ctx, const char *path)
         (size_t)st_before.st_size == size) {
         printf("No changes detected, skipping re-import.\n");
         remove(tmp_path);
+        rmdir(tmp_dir);
         return;
     }
 
@@ -316,6 +355,7 @@ static void shell_edit(ndtool_ctx_t *ctx, const char *path)
         if (!new_data) {
             fprintf(stderr, "Error reading back temp file\n");
             remove(tmp_path);
+            rmdir(tmp_dir);
             return;
         }
 
@@ -369,6 +409,7 @@ static void shell_edit(ndtool_ctx_t *ctx, const char *path)
     }
 
     remove(tmp_path);
+    rmdir(tmp_dir);
 }
 
 static void shell_get(ndtool_ctx_t *ctx, const char *ndfs_path, const char *local_path)
@@ -581,8 +622,9 @@ int cmd_shell(ndtool_ctx_t *ctx)
                 cmd_users(ctx);
             }
             else if (strcmp(cmd, "useradd") == 0) {
-                uint32_t q = arg2 ? (uint32_t)atoi(arg2) : 100;
+                uint32_t q = 100;
                 if (!arg1) fprintf(stderr, "Usage: useradd NAME [QUOTA]\n");
+                else if (arg2 && !ndtool_parse_u32(arg2, &q)) fprintf(stderr, "Error: '%s' is not a valid quota\n", arg2);
                 else cmd_useradd(ctx, arg1, q);
             }
             else if (strcmp(cmd, "userdel") == 0) {
@@ -596,14 +638,18 @@ int cmd_shell(ndtool_ctx_t *ctx)
                 if (!arg1 || !arg2) {
                     fprintf(stderr, "Usage: quotaadd NAME PAGES\n");
                 } else {
-                    cmd_addquota(ctx, arg1, (uint32_t)atoi(arg2));
+                    uint32_t pages;
+                    if (!ndtool_parse_u32(arg2, &pages)) fprintf(stderr, "Error: '%s' is not a valid page count\n", arg2);
+                    else cmd_addquota(ctx, arg1, pages);
                 }
             }
             else if (strcmp(cmd, "quotadel") == 0) {
                 if (!arg1 || !arg2) {
                     fprintf(stderr, "Usage: quotadel NAME PAGES\n");
                 } else {
-                    cmd_remquota(ctx, arg1, (uint32_t)atoi(arg2));
+                    uint32_t pages;
+                    if (!ndtool_parse_u32(arg2, &pages)) fprintf(stderr, "Error: '%s' is not a valid page count\n", arg2);
+                    else cmd_remquota(ctx, arg1, pages);
                 }
             }
             else if (strcmp(cmd, "friends") == 0) {

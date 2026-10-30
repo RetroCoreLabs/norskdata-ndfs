@@ -19,6 +19,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <getopt.h>
+#include <errno.h>
 
 #ifdef _WIN32
 #include <io.h>
@@ -194,7 +195,12 @@ int main(int argc, char **argv)
         case 1011: stat_path = optarg; break;
         case 1012: chmod_spec = optarg; needs_write = 1; break;
 
-        case 1001: custom_pages = (uint32_t)atol(optarg); break;
+        case 1001:
+            if (!ndtool_parse_u32(optarg, &custom_pages)) {
+                fprintf(stderr, "Error: '%s' is not a valid page count\n", optarg);
+                return 1;
+            }
+            break;
         case 1020: ctx.create_bit_file = optarg; break;
         case 1021: ctx.create_boot = optarg; break;
         case 1022: ctx.create_boot_from = optarg; break;
@@ -227,7 +233,10 @@ int main(int argc, char **argv)
 
         /* If --addquota/--remquota, grab the pages arg */
         if ((addquota_name || remquota_name) && optind < argc - 1) {
-            quota_pages = (uint32_t)atol(argv[optind]);
+            if (!ndtool_parse_u32(argv[optind], &quota_pages)) {
+                fprintf(stderr, "Error: '%s' is not a valid page count\n", argv[optind]);
+                return 1;
+            }
         }
     } else {
         if (optind >= argc) {
@@ -249,13 +258,19 @@ int main(int argc, char **argv)
         }
 
         if ((addquota_name || remquota_name) && optind < argc - 1) {
-            quota_pages = (uint32_t)atol(argv[optind]);
+            if (!ndtool_parse_u32(argv[optind], &quota_pages)) {
+                fprintf(stderr, "Error: '%s' is not a valid page count\n", argv[optind]);
+                return 1;
+            }
         }
 
         /* --giveobjblocks/--takeobjblocks NAME COUNT IMAGE - the count is the
          * positional argument between the option's NAME and the image path. */
         if ((giveobjblocks_name || takeobjblocks_name) && optind < argc - 1) {
-            objblock_count = (uint32_t)atol(argv[optind]);
+            if (!ndtool_parse_u32(argv[optind], &objblock_count)) {
+                fprintf(stderr, "Error: '%s' is not a valid block count\n", argv[optind]);
+                return 1;
+            }
         }
     }
 
@@ -339,7 +354,10 @@ int main(int argc, char **argv)
     } else if (useradd_name) {
         uint32_t quota = 100;
         if (optind < argc - 1) {
-            quota = (uint32_t)atol(argv[optind]);
+            if (!ndtool_parse_u32(argv[optind], &quota)) {
+                fprintf(stderr, "Error: '%s' is not a valid quota\n", argv[optind]);
+                return 1;
+            }
         }
         ret = cmd_useradd(&ctx, useradd_name, quota);
     } else if (userdel_name) {
@@ -520,6 +538,19 @@ void ndtool_print_version(void)
 }
 
 /* ── Helper: convert NDFS name to host filename ───────────────────── */
+
+bool ndtool_parse_u32(const char *text, uint32_t *out)
+{
+    char *end = NULL;
+    unsigned long v;
+
+    if (!text || text[0] < '0' || text[0] > '9') return false; /* rejects empty, '-' and '+' */
+    errno = 0;
+    v = strtoul(text, &end, 10);
+    if (errno != 0 || *end != '\0' || v > 0xFFFFFFFFul) return false;
+    *out = (uint32_t)v;
+    return true;
+}
 
 void ndtool_to_host_name(const char *ndfs_name, char *out, size_t out_len, bool lowercase)
 {

@@ -111,10 +111,13 @@ static int cmd_stat_user(ndtool_ctx_t *ctx, const char *user_ref, bool verbose)
     for (p = user_ref; *p; p++) {
         if (*p < '0' || *p > '9') { as_index = -1; break; }
     }
-    if (as_index == 0) as_index = atol(user_ref);
+    if (as_index == 0) {
+        as_index = strtol(user_ref, NULL, 10); /* digits only; overflow saturates */
+        if (as_index > 255) as_index = 256;    /* no user has this index */
+    }
 
     for (i = 0; i < count; i++) {
-        if (as_index >= 0 ? (users[i].user_index == (uint8_t)as_index)
+        if (as_index >= 0 ? ((long)users[i].user_index == as_index)
                           : ci_equal(users[i].user_name, user_ref)) {
             u = &users[i];
             break;
