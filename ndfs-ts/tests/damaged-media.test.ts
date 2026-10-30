@@ -156,3 +156,34 @@ describe('damaged media', () => {
     });
   });
 });
+
+/** Overwrite the stored bytes-in-file (entry offset 56, size minus one) of FILE `name`. */
+function claimStoredSize(image: Uint8Array, name: string, stored: number): void {
+  const needle = Array.from(name).map((c) => c.charCodeAt(0)).concat(0x27);
+  let pos = -1;
+  for (let i = 0; i + needle.length <= image.length && pos < 0; i++) {
+    if (needle.every((b, k) => image[i + k] === b)) pos = i;
+  }
+  expect(pos).toBeGreaterThanOrEqual(2);
+  const at = pos - 2 + 56;
+  image[at] = (stored >>> 24) & 0xff;
+  image[at + 1] = (stored >>> 16) & 0xff;
+  image[at + 2] = (stored >>> 8) & 0xff;
+  image[at + 3] = stored & 0xff;
+}
+
+describe('entry that claims more bytes than its pointer holds', () => {
+  it('read refuses instead of allocating the claimed size', () => {
+    const image = makeFloppy(1);
+    // Stored value 0x7FFFFFFF = a 2 GB file, on a one-page contiguous file.
+    claimStoredSize(image, 'FILE-0', 0x7fffffff);
+    const fs = new NdfsFileSystem(image);
+
+    expect(() => fs.readFile('SYSTEM/FILE-0:DATA')).toThrow(/Corrupt object entry/);
+  });
+
+  it('an honest entry still reads', () => {
+    const fs = new NdfsFileSystem(makeFloppy(1));
+    expect(Array.from(fs.readFile('SYSTEM/FILE-0:DATA'))).toEqual([0]);
+  });
+});

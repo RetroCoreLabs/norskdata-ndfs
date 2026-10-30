@@ -157,3 +157,26 @@ class TestAllThreeAtOnce:
             "bit_file_pages": 1,
         }
         assert fs.get_directory_name() == "DAMAGED"
+
+
+def claim_stored_size(image, name, stored):
+    """Overwrite the stored bytes-in-file (entry offset 56, size minus one) of FILE `name`."""
+    pos = bytes(image).find(name.encode("ascii") + b"'")
+    assert pos >= 2
+    entry = pos - 2
+    image[entry + 56:entry + 60] = stored.to_bytes(4, "big")
+
+
+class TestEntryThatClaimsMoreBytesThanItsPointerHolds:
+    def test_read_refuses_instead_of_allocating_the_claimed_size(self):
+        image = make_floppy(1)
+        # Stored value 0x7FFFFFFF = a 2 GB file, on a one-page contiguous file.
+        claim_stored_size(image, "FILE-0", 0x7FFFFFFF)
+        fs = NdfsFileSystem(image)
+
+        with pytest.raises(ValueError, match="Corrupt object entry"):
+            fs.read_file("SYSTEM/FILE-0:DATA")
+
+    def test_an_honest_entry_still_reads(self):
+        fs = NdfsFileSystem(make_floppy(1))
+        assert fs.read_file("SYSTEM/FILE-0:DATA") == bytes([0])

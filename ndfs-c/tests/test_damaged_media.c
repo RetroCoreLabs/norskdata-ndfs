@@ -314,6 +314,75 @@ static int test_all_three_report_each_count_and_list_what_survived(void)
     return 0;
 }
 
+/* ── an entry that claims more bytes than its pointer holds ─────── */
+
+/**
+ * Overwrite the stored bytes-in-file (entry offset 56, size minus one) of the
+ * file whose name is `name`. The name is found by its 0x27 terminator, so
+ * "FILE-0" cannot match "FILE-0X".
+ */
+static int claim_stored_size(uint8_t *image, size_t size, const char *name, uint32_t stored)
+{
+    size_t len = strlen(name);
+    size_t i;
+
+    for (i = 2; i + len < size; i++) {
+        if (memcmp(image + i, name, len) == 0 && image[i + len] == 0x27) {
+            uint8_t *field = image + (i - 2) + 56;
+            field[0] = (uint8_t)(stored >> 24);
+            field[1] = (uint8_t)(stored >> 16);
+            field[2] = (uint8_t)(stored >> 8);
+            field[3] = (uint8_t)stored;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int test_entry_claiming_more_than_its_pointer_holds_is_refused(void)
+{
+    uint8_t *image;
+    size_t size = 0;
+    ndfs_filesystem_t *fs = NULL;
+    uint8_t *data = NULL;
+    size_t data_size = 0;
+
+    image = make_floppy(&size);
+    TEST_ASSERT_NOT_NULL(image);
+    /* Stored value 0x7FFFFFFF = a 2 GB file, on a one-page contiguous file. */
+    TEST_ASSERT(claim_stored_size(image, size, "FILE-0", 0x7FFFFFFFu));
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(image, size, true, &fs));
+
+    TEST_ASSERT_EQUAL(NDFS_ERR_CORRUPT, ndfs_read_file(fs, "SYSTEM/FILE-0:DATA", &data, &data_size));
+    TEST_ASSERT(data == NULL);
+
+    ndfs_close(fs);
+    free(image);
+    return 0;
+}
+
+static int test_honest_entry_still_reads(void)
+{
+    uint8_t *image;
+    size_t size = 0;
+    ndfs_filesystem_t *fs = NULL;
+    uint8_t *data = NULL;
+    size_t data_size = 0;
+
+    image = make_floppy(&size);
+    TEST_ASSERT_NOT_NULL(image);
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(image, size, true, &fs));
+
+    TEST_ASSERT_OK(ndfs_read_file(fs, "SYSTEM/FILE-0:DATA", &data, &data_size));
+    TEST_ASSERT_EQUAL_UINT(1, data_size);
+    TEST_ASSERT_EQUAL_UINT(0, data[0]);
+
+    ndfs_free_data(data);
+    ndfs_close(fs);
+    free(image);
+    return 0;
+}
+
 void run_damaged_media_tests(void)
 {
     TEST_SUITE_BEGIN("Damaged media");
@@ -325,4 +394,6 @@ void run_damaged_media_tests(void)
     RUN_TEST(test_user_data_page_costs_the_names_and_not_one_file);
     RUN_TEST(test_bit_file_page_costs_the_allocation_state_only);
     RUN_TEST(test_all_three_report_each_count_and_list_what_survived);
+    RUN_TEST(test_entry_claiming_more_than_its_pointer_holds_is_refused);
+    RUN_TEST(test_honest_entry_still_reads);
 }

@@ -1387,6 +1387,24 @@ class NdfsFileSystem:
         if obj.file_pointer is None or obj.file_pointer.block_id == 0:
             return bytearray(0)
 
+        # bytes_in_file comes from the image and is used as an allocation size, so a
+        # damaged or hostile entry could ask for up to 4 GB. Check it against what the
+        # pointer type can hold: contiguous = its page count, indexed = one index block
+        # (512 pages), sub-indexed = 512 index blocks of 512 pages.
+        if obj.file_pointer.type == PointerType.Contiguous:
+            max_pages = obj.pages_in_file
+        elif obj.file_pointer.type == PointerType.Indexed:
+            max_pages = MAX_OBJECT_FILE_POINTERS
+        elif obj.file_pointer.type == PointerType.SubIndexed:
+            max_pages = MAX_OBJECT_FILE_POINTERS * MAX_OBJECT_FILE_POINTERS
+        else:
+            max_pages = 0
+        if obj.bytes_in_file > max_pages * NDFS_PAGE_SIZE:
+            raise ValueError(
+                f"Corrupt object entry: {obj.bytes_in_file} bytes in file does not fit "
+                f"its {obj.file_pointer.type.name} file pointer"
+            )
+
         result = bytearray(obj.bytes_in_file)
         bytes_read = 0
 

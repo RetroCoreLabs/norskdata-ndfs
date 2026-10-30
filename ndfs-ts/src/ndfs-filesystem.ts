@@ -1345,6 +1345,22 @@ export class NdfsFileSystem {
       return new Uint8Array(0);
     }
 
+    // bytesInFile comes from the image and is used as an allocation size, so a damaged
+    // or hostile entry could ask for up to 4 GB. Check it against what the pointer type
+    // can hold: contiguous = its page count, indexed = one index block (512 pages),
+    // sub-indexed = 512 index blocks of 512 pages.
+    let maxPages = 0;
+    if (obj.filePointer.type === PointerType.Contiguous) maxPages = obj.pagesInFile;
+    else if (obj.filePointer.type === PointerType.Indexed) maxPages = MAX_OBJECT_FILE_POINTERS;
+    else if (obj.filePointer.type === PointerType.SubIndexed) {
+      maxPages = MAX_OBJECT_FILE_POINTERS * MAX_OBJECT_FILE_POINTERS;
+    }
+    if (obj.bytesInFile > maxPages * NDFS_PAGE_SIZE) {
+      throw new Error(
+        `Corrupt object entry: ${obj.bytesInFile} bytes in file does not fit its file pointer`,
+      );
+    }
+
     const result = new Uint8Array(obj.bytesInFile);
     let bytesRead = 0;
 
