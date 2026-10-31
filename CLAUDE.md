@@ -43,6 +43,8 @@ cd ndfs-ts && npm install && npm test
 cd ndfs-ts && npx vitest run tests/golden.test.ts                          # single file
 ```
 
+To release a new version, follow "Releasing a new version" in `README.md`: the version is written by hand in four files, then a `vX.Y.Z` tag starts the GitHub release build.
+
 There are **no external dependencies** in any of the three libraries — keep it that way.
 
 ## Core on-disk model (shared by all three)

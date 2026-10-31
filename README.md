@@ -268,6 +268,45 @@ make test       # build + run the C unit tests
 make help       # list all targets
 ```
 
+## Releasing a new version
+
+The version number is written by hand in **four files**. There is no script that keeps them
+in step, so change all four to the same number. Paths are from the repository root.
+
+| File | What to change |
+|------|----------------|
+| `ndfs-c/CMakeLists.txt` | line 2: `project(ndfs VERSION X.Y.Z LANGUAGES C)` |
+| `ndfs-c/tools/ndtool/ndtool.h` | line 13: `#define NDTOOL_VERSION "X.Y.Z"` (this is what `ndtool` prints) |
+| `ndfs-py/pyproject.toml` | line 3: `version = "X.Y.Z"` |
+| `ndfs-ts/package.json` | line 3: `"version": "X.Y.Z"` |
+
+To check that none was missed, search for the old number. Only `CHANGELOG.md` should still
+hold it (old entries):
+
+```bash
+grep -rn "0.0.8" --include=* . | grep -vE "node_modules|/build|\.git/|package-lock"
+```
+
+Steps, in this order:
+
+1. Change the four files above.
+2. In `CHANGELOG.md`, add a heading `## X.Y.Z - YYYY-MM-DD` at the top, with the changes under it.
+3. Run the tests: `make test`, `make test-py`, `make test-ts`. The C tests take about 10 minutes.
+4. Commit, for example `Version X.Y.Z`, and push to `main`.
+5. Tag that commit and push the tag. The tag **must** start with `v`:
+
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+Pushing the tag starts the [release workflow](.github/workflows/release.yml). It builds
+`ndtool` for Windows, Linux and macOS and publishes the GitHub Release. The archive names
+get their version from the **tag**, not from the files above, so a tag that does not match
+the files gives archives whose names say one number while `ndtool --version` says another.
+
+Not part of the version: `ndfs-ts/package-lock.json` is ignored by git and is not committed.
+
 ## Downloads
 
 Pre-built `ndtool` binaries for **Windows (x64)**, **Linux (x64 / arm64)**, and
