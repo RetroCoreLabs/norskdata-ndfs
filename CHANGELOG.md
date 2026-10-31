@@ -2,6 +2,29 @@
 
 All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndtool`).
 
+## 0.0.9 - 2026-10-31
+
+### Fixed - hardening after a build-warning and memory/security review (ndfs-c, ndtool; size check also in ndfs-py and ndfs-ts)
+
+* All three ports: reading a file no longer trusts the size stored in the image. A damaged or
+  hostile entry could ask for up to 4 GB. The size is now checked against what the file pointer can
+  hold (contiguous: its page count; indexed: 512 pages; sub-indexed: 512 x 512 pages) and a larger
+  claim is refused as a corrupt entry. Regression tests in the three damaged-media suites.
+* ndfs-c: the four `strncpy` copies that gcc warned about (`-Wstringop-truncation`) and the other
+  `strcpy` calls into fixed-size name fields are `snprintf`. The build has no warnings.
+* ndfs-c: the filesystem report buffer measures each item before writing it and no longer leaks the
+  buffer when `realloc` fails. Digit-only user references use `strtol` instead of `atol`.
+* ndtool `edit`: the file name taken from the image is cut down to letters, digits and `. - _`
+  before it reaches the editor command line, so a name holding `$(...)` cannot run as a command. The
+  temp file is in a private directory made with `mkdtemp` instead of a fixed path in `/tmp`.
+* ndtool: numbers on the command line and in the shell (`--pages`, `--quotaadd`, `--quotadel`,
+  `--giveobjblocks`, `--takeobjblocks`, `--useradd`, `useradd`, `quotaadd`, `quotadel`) are checked,
+  so `-1` is an error and no longer becomes about 4 billion.
+* ndtool `--stat`: a numeric user reference of 256 or more no longer matches user 0.
+* Not changed on purpose: extract still writes names from the image as they are, including `/` and
+  `..`.
+* Checked with the C tests under AddressSanitizer + UBSan and under Valgrind: no errors, no leaks.
+
 ## Unreleased - 2026-10-29
 
 ### Added - SINTRAN CPU number and CPU type on a pack (all three ports and ndtool)
