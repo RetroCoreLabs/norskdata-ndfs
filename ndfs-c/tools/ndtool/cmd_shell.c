@@ -5,9 +5,11 @@
  */
 
 /* Expose POSIX mkdtemp()/rmdir() under strict -std=c99 (must precede any
- * system header include). */
+ * system header include). macOS hides mkdtemp() in strict POSIX mode unless
+ * _DARWIN_C_SOURCE is also set. */
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE
 #endif
 
 #include "ndtool.h"
@@ -20,15 +22,10 @@
 #include <sys/stat.h>
 
 #ifdef _WIN32
+/* MinGW already declares mkdtemp(); only rmdir() needs the Windows name. */
 #include <io.h>
 #include <direct.h>
 #define rmdir _rmdir
-/* No mkdtemp on Windows: make a unique name, then create the directory. */
-static char *mkdtemp(char *tmpl)
-{
-    if (!_mktemp(tmpl)) return NULL;
-    return _mkdir(tmpl) == 0 ? tmpl : NULL;
-}
 #else
 #include <unistd.h>
 #endif
