@@ -1752,7 +1752,10 @@ static ndfs_error_t create_new_file(struct ndfs_filesystem *fs,
      * The logical extent is still ceil(bytes_in_file / NDFS_PAGE_SIZE), which is what
      * ndfs_get_file_blocks uses to walk the index. */
     entry.pages_in_file = count_real_data_pages_in_buffer(file_data, file_size, data_pages, holes);
-    entry.bytes_in_file = file_size > 0 ? (uint32_t)file_size : 1;
+    /* An empty file is 0 bytes, as SINTRAN records one it creates (measured 2026-11-04:
+     * @CREATE-FILE ACCTEST:SYMB,0 on nd100x stores 0xFFFFFFFF, i.e. 0 bytes). This used to
+     * store 1 for an empty file, so it came back out as 1 byte. */
+    entry.bytes_in_file = (uint32_t)file_size;
     entry.file_pointer.block_id = top_block_id;
     entry.file_pointer.type = pointer_type;
     /* A new file inherits the OWNING USER's default file access, which is what
@@ -1925,7 +1928,7 @@ static ndfs_error_t update_existing_file(struct ndfs_filesystem *fs,
     /* Update existing entry */
     /* Allocated count, not the logical extent - see the note at the create site. */
     existing->pages_in_file = count_real_data_pages_in_buffer(file_data, file_size, data_pages, holes);
-    existing->bytes_in_file = file_size > 0 ? (uint32_t)file_size : 1;
+    existing->bytes_in_file = (uint32_t)file_size;   /* 0 stays 0 - see the create site */
     existing->file_pointer.block_id = top_block_id;
     existing->file_pointer.type = pointer_type;
     /* No separate SubIndexed file-type-flag bit exists (mirrors the TS port,
@@ -2726,7 +2729,13 @@ static void register_contiguous_run(struct ndfs_filesystem *fs, ndfs_user_entry_
      * page N of the file is simply block (file_pointer.block_id + N). */
     entry.file_pointer.block_id = start_block;
     entry.file_pointer.type = NDFS_PTR_CONTIGUOUS;
-    entry.access_bits = NDFS_ACCESS_DEFAULT;
+    /* The owner's default file access, as for an indexed file: SINTRAN gives a new
+     * contiguous file the same (measured 2026-11-04 on nd100x: with SYSTEM's default set
+     * to N,RW,RWACD, @CREATE-FILE ACCCON:DATA,4 stored 0x007F). This used to be a flat
+     * NDFS_ACCESS_DEFAULT (0x03FF). Same fallback as the indexed create site. */
+    entry.access_bits = user->default_file_access
+                            ? (uint16_t)(user->default_file_access & 0x7FFFu)
+                            : NDFS_ACCESS_DEFAULT;
 
     /* Contiguous, not indexed -- the flag SINTRAN prints as "CONTINUOUS FILE". */
     entry.file_type_flags = NDFS_FT_CONTIGUOUS;
@@ -3282,6 +3291,143 @@ ndfs_error_t ndfs_remove_friend(ndfs_filesystem_t *fs, const char *user_ref,
         return NDFS_ERR_NOT_FOUND;
 
     return commit_writes(fs, write_user_page(fs, fs->users[owner_slot].user_index));
+}
+
+ndfs_error_t ndfs_set_friend_access(ndfs_filesystem_t *fs, const char *user_ref,
+                                    const char *friend_ref, const char *rights)
+{
+    int owner_slot;
+    uint8_t friend_index;
+    uint8_t perm_bits;
+    ndfs_user_entry_t *owner;
+    size_t i;
+    ndfs_error_t err;
+
+    if (!fs || !user_ref || !friend_ref) return NDFS_ERR_NULL_PTR;
+    if (fs->read_only) return NDFS_ERR_READ_ONLY;
+
+    owner_slot = resolve_user_ref(fs, user_ref);
+    if (owner_slot < 0) return NDFS_ERR_NOT_FOUND;
+    owner = &fs->users[owner_slot];
+
+    err = resolve_friend_index(fs, friend_ref, &friend_index);
+    if (err != NDFS_OK) return err;
+    if (!ndfs_ue_is_friend(owner, friend_index)) return NDFS_ERR_NOT_FOUND;
+
+    /* SINTRAN: an empty access field is "no change". */
+    if (!rights || !rights[0]) return NDFS_OK;
+
+    err = ndfs_parse_access_rights(rights, &perm_bits);
+    if (err != NDFS_OK) return err;
+
+    /* Rewrite the friend's word in its own slot: index and the in-use bit
+     * stay, only the rights bits 8-12 change. */
+    for (i = 0; i < NDFS_MAX_FRIENDS; i++) {
+        ndfs_user_friend_t *uf = &owner->friends[i];
+        if (ndfs_uf_is_active(uf) && ndfs_uf_friend_index(uf) == friend_index) {
+            ndfs_uf_set_friend(uf, friend_index, perm_bits);
+            break;
+        }
+    }
+    return commit_writes(fs, write_user_page(fs, owner->user_index));
+}
+
+/* ── Access rights in SINTRAN's own form ─────────────────────────── */
+
+ndfs_error_t ndfs_parse_access_rights(const char *s, uint8_t *out_rights)
+{
+    uint8_t r = 0;
+    bool none = false, letters = false;
+
+    if (!s || !out_rights) return NDFS_ERR_NULL_PTR;
+    *out_rights = 0;
+    if (!s[0]) return NDFS_ERR_INVALID_ARG;
+
+    for (; *s; s++) {
+        switch (*s) {
+        case 'R': case 'r': r |= NDFS_ACC_READ;      letters = true; break;
+        case 'W': case 'w': r |= NDFS_ACC_WRITE;     letters = true; break;
+        case 'A': case 'a': r |= NDFS_ACC_APPEND;    letters = true; break;
+        case 'C': case 'c': r |= NDFS_ACC_COMMON;    letters = true; break;
+        case 'D': case 'd': r |= NDFS_ACC_DIRECTORY; letters = true; break;
+        case 'N': case 'n': none = true; break;
+        default: return NDFS_ERR_INVALID_ARG;
+        }
+    }
+    /* "N must stand alone" (@SET-FILE-ACCESS rule 2). */
+    if (none && letters) return NDFS_ERR_INVALID_ARG;
+    *out_rights = r;
+    return NDFS_OK;
+}
+
+ndfs_error_t ndfs_apply_access_triple(uint16_t old, const char *triple,
+                                      uint16_t *out_bits)
+{
+    /* SINTRAN's field order: PUBLIC, FRIEND, OWN. */
+    static const unsigned shifts[3] = {
+        NDFS_ACC_PUBLIC_SHIFT, NDFS_ACC_FRIEND_SHIFT, NDFS_ACC_OWN_SHIFT
+    };
+    char field[16];
+    uint16_t bits = (uint16_t)(old & 0x7FFF);
+    const char *p;
+    size_t n = 0;
+    int k = 0;
+
+    if (!triple || !out_bits) return NDFS_ERR_NULL_PTR;
+
+    for (p = triple; ; p++) {
+        if (*p == ',' || *p == '\0') {
+            if (k >= 3) return NDFS_ERR_INVALID_ARG; /* a fourth field */
+            field[n] = '\0';
+            if (n > 0) {
+                uint8_t r;
+                ndfs_error_t err = ndfs_parse_access_rights(field, &r);
+                if (err != NDFS_OK) return err;
+                bits = (uint16_t)((bits & ~(NDFS_ACC_TIER_MASK << shifts[k])) |
+                                  ((unsigned)r << shifts[k]));
+            }
+            k++;
+            n = 0;
+            if (*p == '\0') break;
+        } else if (*p == ' ') {
+            continue; /* "N, RWA, RWACD" reads the same as "N,RWA,RWACD" */
+        } else {
+            if (n + 1 >= sizeof(field)) return NDFS_ERR_INVALID_ARG;
+            field[n++] = *p;
+        }
+    }
+    *out_bits = bits;
+    return NDFS_OK;
+}
+
+ndfs_error_t ndfs_set_default_file_access(ndfs_filesystem_t *fs,
+                                          const char *user_ref,
+                                          uint16_t access_bits)
+{
+    int slot;
+
+    if (!fs || !user_ref) return NDFS_ERR_NULL_PTR;
+    if (fs->read_only) return NDFS_ERR_READ_ONLY;
+
+    slot = resolve_user_ref(fs, user_ref);
+    if (slot < 0) return NDFS_ERR_NOT_FOUND;
+
+    fs->users[slot].default_file_access = (uint16_t)(access_bits & 0x7FFF);
+    /* Only this user's entry changes. */
+    return commit_writes(fs, write_user_page(fs, fs->users[slot].user_index));
+}
+
+ndfs_error_t ndfs_get_default_file_access(const ndfs_filesystem_t *fs,
+                                          const char *user_ref,
+                                          uint16_t *out_bits)
+{
+    int slot;
+
+    if (!fs || !user_ref || !out_bits) return NDFS_ERR_NULL_PTR;
+    slot = resolve_user_ref(fs, user_ref);
+    if (slot < 0) return NDFS_ERR_NOT_FOUND;
+    *out_bits = fs->users[slot].default_file_access;
+    return NDFS_OK;
 }
 
 /* ── Read operations (extended) ──────────────────────────────────── */

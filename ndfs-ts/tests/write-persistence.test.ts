@@ -3,6 +3,7 @@ import { NdfsFileSystem } from '../src/ndfs-filesystem.js';
 import { ImageTemplate } from '../src/types.js';
 import { NDFS_PAGE_SIZE, MASTER_BLOCK_OFFSET, EXTENDED_INFO_OFFSET } from '../src/constants.js';
 import { readUint32BE } from '../src/endian.js';
+import { applyAccessTriple } from '../src/access-permissions.js';
 
 function createFS(pages: number = 200): NdfsFileSystem {
   return NdfsFileSystem.createImage({
@@ -160,6 +161,61 @@ describe('WritePersistence', () => {
     fs.removeFriend('ALICE', 'BOB');
     expect(fs.listFriends('ALICE').length).toBe(0);
     expect(() => fs.removeFriend('ALICE', 'BOB')).toThrow();
+  });
+
+  it('@SET-FRIEND-ACCESS changes an existing friend in place', () => {
+    const fs = createFS();
+    for (const u of ['ALICE', 'BOB', 'CAROL']) fs.addUser(u, 100);
+    fs.addFriend('ALICE', 'BOB', 'RWA');
+    fs.addFriend('ALICE', 'CAROL', 'R');
+
+    // The manual's example: @SET-FRIEND-ACCESS BUDDY,W
+    fs.setFriendAccess('ALICE', 'BOB', 'W');
+    expect(fs.listFriends('ALICE').map((f) => [f.name, f.perms])).toEqual([
+      ['BOB', '-W---'],
+      ['CAROL', 'R----'],
+    ]);
+
+    // "N" keeps BOB on the list with no rights; "" is no change.
+    fs.setFriendAccess('ALICE', 'BOB', 'N');
+    fs.setFriendAccess('ALICE', 'CAROL', '');
+    expect(fs.listFriends('ALICE').map((f) => [f.name, f.perms])).toEqual([
+      ['BOB', '-----'],
+      ['CAROL', 'R----'],
+    ]);
+
+    expect(() => fs.setFriendAccess('BOB', 'ALICE', 'R')).toThrow(); // not a friend
+    expect(() => fs.setFriendAccess('NOBODY', 'BOB', 'R')).toThrow(); // no such owner
+    expect(() => fs.setFriendAccess('ALICE', 'BOB', 'RX')).toThrow();
+    expect(() => fs.setFriendAccess('ALICE', 'BOB', 'NR')).toThrow();
+
+    fs.setFriendAccess('ALICE', 'BOB', 'rwacd');
+    const fs2 = new NdfsFileSystem(fs.toBuffer());
+    expect(fs2.listFriends('ALICE')[0].perms).toBe('RWACD');
+  });
+
+  it('@SET-FILE-ACCESS on an existing file, from SINTRAN form', () => {
+    const fs = createFS();
+    fs.addUser('ALICE', 100);
+    fs.writeFile('ALICE/F-1:DATA', new Uint8Array([0x58]));
+    const before = fs.getObjectEntry('F-1', 'ALICE', 'DATA')!.accessBits;
+    fs.setFileAccess('ALICE/F-1:DATA', applyAccessTriple(before, 'N,N,RWACD'));
+    expect(fs.getObjectEntry('F-1', 'ALICE', 'DATA')!.accessBits).toBe(0x001f);
+    const fs2 = new NdfsFileSystem(fs.toBuffer());
+    expect(fs2.getObjectEntry('F-1', 'ALICE', 'DATA')!.accessBits).toBe(0x001f);
+    expect(() => fs.setFileAccess('ALICE/NONE:DATA', 0)).toThrow();
+  });
+
+  it('@SET-DEFAULT-FILE-ACCESS sets and persists the user default', () => {
+    const fs = createFS();
+    fs.addUser('ALICE', 100);
+    const bits = applyAccessTriple(fs.getDefaultFileAccess('ALICE'), 'N,RWA,RWACD');
+    fs.setDefaultFileAccess('ALICE', bits);
+    expect(fs.getDefaultFileAccess('ALICE')).toBe(0x00ff);
+    const fs2 = new NdfsFileSystem(fs.toBuffer());
+    expect(fs2.getDefaultFileAccess('ALICE')).toBe(0x00ff);
+    expect(() => fs.setDefaultFileAccess('NOBODY', 0)).toThrow();
+    expect(() => fs.getDefaultFileAccess('NOBODY')).toThrow();
   });
 
   // Bug 1+2 regression: an unrelated mutation must not corrupt other files'

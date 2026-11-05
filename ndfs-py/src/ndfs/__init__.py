@@ -63,6 +63,8 @@ from ndfs.access_permissions import (
     PERM_APPEND,
     PERM_EXECUTE,
     PERM_DELETE,
+    parse_access_rights,
+    apply_access_triple,
 )
 from ndfs.access_control import get_access_level, get_friend_permissions, check_access
 from ndfs.image_creator import create_image, options_for_disk_type, TemplateSpec
@@ -160,6 +162,7 @@ __all__ = [
     "NdfsError", "ObjectBlockLimitError", "ObjectBlockCollisionError",
     # Access control
     "AccessPermissions", "PERM_READ", "PERM_WRITE", "PERM_APPEND", "PERM_EXECUTE", "PERM_DELETE",
+    "parse_access_rights", "apply_access_triple",
     "get_access_level", "get_friend_permissions", "check_access",
     # Image creation
     "create_image", "options_for_disk_type", "TemplateSpec",

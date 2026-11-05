@@ -59,6 +59,10 @@ static void shell_help(void)
     printf("  stat [-v] PATH               File metadata (-v adds block list)\n");
     printf("  stat [-v] USER               User details + friends\n");
     printf("  chmod SPEC PATH              Change access (e.g. OWN+WD,FRIEND=RW,PUBLIC-A)\n");
+    printf("  set-file-access PATH P,F,O   The same in SINTRAN's form (@SET-FILE-ACCESS):\n");
+    printf("                               PUBLIC,FRIEND,OWN, N or RWACD, empty = no change\n");
+    printf("  set-default-file-access USER [P,F,O]  Access for USER's NEW files\n");
+    printf("                               (@SET-DEFAULT-FILE-ACCESS); USER alone shows it\n");
     printf("  info                         Filesystem info\n");
     printf("  bitmap                       Bitmap visualization and validation\n");
     printf("  fsck                         Full filesystem check\n");
@@ -74,9 +78,11 @@ static void shell_help(void)
     printf("  segments                     List the SINTRAN segments (name, base, length, disk page)\n");
     printf("  export-segment NAME          Write a segment to NAME.seg in the output directory\n");
     printf("  import-segment NAME FILE     Write a host file over a segment's pages\n");
-    printf("  friends USER                 List a user's friends and their rights\n");
-    printf("  friendadd OWNER FRIEND [R]   Add friend (R = rights, default RWA)\n");
-    printf("  frienddel OWNER FRIEND       Remove a friend\n");
+    printf("  friends USER                 List a user's friends and their rights (@LIST-FRIENDS)\n");
+    printf("  friendadd OWNER FRIEND [R]   Add friend, R = rights, default RWA (@CREATE-FRIEND)\n");
+    printf("  frienddel OWNER FRIEND       Remove a friend (@DELETE-FRIEND)\n");
+    printf("  set-friend-access OWNER FRIEND R  Change a friend's rights, N or RWACD\n");
+    printf("                               (@SET-FRIEND-ACCESS)\n");
     printf("  save [HOSTFILE]              Save changes to disk (optional save-as)\n");
     printf("  version / ver                Show tool version and build date/time\n");
     printf("  help                         Show this help\n");
@@ -503,6 +509,8 @@ int cmd_shell(ndtool_ctx_t *ctx)
 {
     char line[1024];
     printf("ndtool shell - type 'help' for commands\n");
+    /* From here a command changes the in-memory copy only (image_file.c). */
+    ctx->in_shell = true;
     ndtool_print_version();
 
     while (1) {
@@ -527,13 +535,13 @@ int cmd_shell(ndtool_ctx_t *ctx)
             if (!cmd) continue;
 
             if (strcmp(cmd, "quit") == 0 || strcmp(cmd, "exit") == 0) {
-                if (ctx->modified) {
+                if (ctx->modified || ctx->shell_unsaved) {
                     char resp[16];
                     printf("Unsaved changes. Save before quitting? [y/N] ");
                     fflush(stdout);
                     if (fgets(resp, sizeof(resp), stdin) &&
                         (resp[0] == 'y' || resp[0] == 'Y')) {
-                        ndtool_save_image(ctx);
+                        ndtool_write_image(ctx);
                     }
                 }
                 break;
@@ -684,6 +692,34 @@ int cmd_shell(ndtool_ctx_t *ctx)
                     }
                 }
             }
+            else if (strcmp(cmd, "set-file-access") == 0) {
+                /* set-file-access PATH PUBLIC,FRIEND,OWN - SINTRAN's own order */
+                if (!arg1 || !arg2) {
+                    fprintf(stderr, "Usage: set-file-access USER/FILE:TYPE PUBLIC,FRIEND,OWN\n");
+                    fprintf(stderr, "  each field N or letters RWACD, empty = no change (N,N,RWACD)\n");
+                } else {
+                    cmd_set_file_access(ctx, arg2, arg1);
+                }
+            }
+            else if (strcmp(cmd, "set-friend-access") == 0) {
+                if (!arg1 || !arg2 || !arg3) {
+                    fprintf(stderr, "Usage: set-friend-access OWNER FRIEND RIGHTS   (N or RWACD)\n");
+                } else {
+                    char spec[160];
+                    snprintf(spec, sizeof(spec), "%s:%s:%s", arg1, arg2, arg3);
+                    cmd_set_friend_access(ctx, spec);
+                }
+            }
+            else if (strcmp(cmd, "set-default-file-access") == 0) {
+                if (!arg1) {
+                    fprintf(stderr, "Usage: set-default-file-access USER [PUBLIC,FRIEND,OWN]\n");
+                } else {
+                    char spec[160];
+                    if (arg2) snprintf(spec, sizeof(spec), "%s:%s", arg1, arg2);
+                    else      snprintf(spec, sizeof(spec), "%s", arg1);
+                    cmd_set_default_access(ctx, spec);
+                }
+            }
             else if (strcmp(cmd, "passwd") == 0) {
                 if (!arg1) {
                     fprintf(stderr, "Usage: passwd NAME\n");
@@ -721,9 +757,10 @@ int cmd_shell(ndtool_ctx_t *ctx)
             }
             else if (strcmp(cmd, "save") == 0) {
                 if (arg1) ctx->image_path = arg1;
-                ndtool_save_image(ctx);
-                ctx->modified = false;
-                printf("Image saved to %s\n", ctx->image_path);
+                if (ndtool_write_image(ctx) == 0) {
+                    ctx->modified = false;
+                    printf("Image saved to %s\n", ctx->image_path);
+                }
             }
             else {
                 printf("Unknown command: %s (type 'help')\n", cmd);

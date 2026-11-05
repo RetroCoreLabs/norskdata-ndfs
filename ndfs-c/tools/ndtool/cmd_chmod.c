@@ -138,12 +138,15 @@ static int parse_spec(const char *spec, uint16_t *bits)
     return 0;
 }
 
+/* Print the before -> after view, then write unless -n or unchanged. */
+static int show_and_write(ndtool_ctx_t *ctx, const ndfs_file_entry_t *meta,
+                          const char *path, uint16_t before, uint16_t bits);
+
 int cmd_chmod(ndtool_ctx_t *ctx, const char *spec, const char *path)
 {
     ndfs_file_entry_t meta;
     ndfs_object_entry_t obj;
     uint16_t bits, before;
-    char o1[64], f1[64], p1[64], o2[64], f2[64], p2[64];
 
     if (!spec || !path) {
         fprintf(stderr, "Usage: chmod SPEC USER/FILE:TYPE   (e.g. 'OWN+WD,PUBLIC-A')\n");
@@ -166,6 +169,43 @@ int cmd_chmod(ndtool_ctx_t *ctx, const char *spec, const char *path)
     } else if (parse_spec(spec, &bits) != 0) {
         return -1;
     }
+    return show_and_write(ctx, &meta, path, before, bits);
+}
+
+/*
+ * --set-file-access ACCESS PATH / shell set-file-access PATH ACCESS:
+ * the @SET-FILE-ACCESS equivalent. ACCESS is SINTRAN's own form,
+ * "<public>,<friend>,<own>", each field N or letters RWACD, an empty field
+ * meaning no change: 'N,N,RWACD', ',RW,'.
+ */
+int cmd_set_file_access(ndtool_ctx_t *ctx, const char *access, const char *path)
+{
+    ndfs_file_entry_t meta;
+    ndfs_object_entry_t obj;
+    uint16_t bits;
+
+    if (!access || !path) {
+        fprintf(stderr, "Usage: set-file-access USER/FILE:TYPE PUBLIC,FRIEND,OWN   (e.g. N,N,RWACD)\n");
+        return -1;
+    }
+    if (ndfs_get_metadata(ctx->fs, path, &meta) != NDFS_OK ||
+        ndfs_get_object_entry(ctx->fs, meta.full_name, meta.user_name, &obj) != NDFS_OK) {
+        fprintf(stderr, "File not found: %s\n", path);
+        return -1;
+    }
+    if (ndfs_apply_access_triple(obj.access_bits, access, &bits) != NDFS_OK) {
+        fprintf(stderr, "set-file-access: bad access '%s': give PUBLIC,FRIEND,OWN, "
+                        "each N or letters RWACD, empty = no change\n", access);
+        return -1;
+    }
+    return show_and_write(ctx, &meta, path, obj.access_bits, bits);
+}
+
+static int show_and_write(ndtool_ctx_t *ctx, const ndfs_file_entry_t *meta_in,
+                          const char *path, uint16_t before, uint16_t bits)
+{
+    const ndfs_file_entry_t meta = *meta_in;
+    char o1[64], f1[64], p1[64], o2[64], f2[64], p2[64];
 
     ndtool_access_tier_str(before, NDFS_ACC_OWN_SHIFT, o1, sizeof(o1));
     ndtool_access_tier_str(before, NDFS_ACC_FRIEND_SHIFT, f1, sizeof(f1));

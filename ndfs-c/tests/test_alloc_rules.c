@@ -244,6 +244,33 @@ static int test_contiguous_stack_from_top(void)
     return 0;
 }
 
+/* A new file gets its owner's default access, indexed and contiguous alike, and an empty
+ * file stays 0 bytes. Measured 2026-11-04 on nd100x: with SYSTEM's default set to
+ * N,RW,RWACD, @CREATE-FILE ACCTEST:SYMB,0 and @CREATE-FILE ACCCON:DATA,4 both stored 0x007F,
+ * with 0xFFFFFFFF (0 bytes) in the bytes field. */
+static int test_new_files_get_owner_default_access(void)
+{
+    ndfs_filesystem_t *fs = new_smd75();
+    ndfs_object_entry_t e;
+    static const uint8_t text[3] = { 'X', '\r', '\n' };
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_set_default_file_access(fs, "SYSTEM", 0x007F));
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/NEWIDX:SYMB", text, sizeof(text)));
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/EMPTY:SYMB", text, 0));
+    TEST_ASSERT_OK(ndfs_create_contiguous_file(fs, "SYSTEM/NEWCON:DATA", 4));
+
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "NEWIDX:SYMB", "SYSTEM", &e));
+    TEST_ASSERT_EQUAL(0x007F, e.access_bits);
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "NEWCON:DATA", "SYSTEM", &e));
+    TEST_ASSERT_EQUAL(0x007F, e.access_bits);
+    TEST_ASSERT_EQUAL(0, e.bytes_in_file);
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "EMPTY:SYMB", "SYSTEM", &e));
+    TEST_ASSERT_EQUAL(0, e.bytes_in_file);
+    ndfs_close(fs);
+    return 0;
+}
+
 /* A contiguous file of one page uses the data page rule: 32768 on a cold SMD 75 MB. */
 static int test_single_page_file_uses_block_rule(void)
 {
@@ -354,6 +381,7 @@ void run_alloc_rules_tests(void)
     RUN_TEST(test_rules_fall_back_without_bit_address);
     RUN_TEST(test_contiguous_stack_from_top);
     RUN_TEST(test_single_page_file_uses_block_rule);
+    RUN_TEST(test_new_files_get_owner_default_access);
     RUN_TEST(test_indexed_file_placement);
     RUN_TEST(test_quota_charges_index_and_object_pages);
     RUN_TEST(test_quota_large_file_sub_index);

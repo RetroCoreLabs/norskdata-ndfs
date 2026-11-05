@@ -63,7 +63,15 @@ PERMISSIONS:
     TIER  = OWN | FRIEND | PUBLIC | ALL (or O | F | P)
     OP    = '=' set   '+' add   '-' remove
     RIGHT = R read  W write  A append  C common  D directory
-  New files default to OWN+FRIEND all rights, PUBLIC none (0x03FF).
+  The same in SINTRAN's own form - PUBLIC,FRIEND,OWN, each N or RWACD,
+  an empty field = no change (as @SET-FILE-ACCESS):
+  ndtool --set-file-access N,N,RWACD SYSTEM/F-1:DATA <image>
+  ndtool --set-file-access ,RW, SYSTEM/F-1:DATA -n <image>   (FRIEND only, preview)
+  A new file gets its owner's default file access (below); a new user's
+  default is 0x04FF: PUBLIC R, FRIEND RWA, OWN RWACD.
+  ndtool --set-default-file-access ALICE <image>               Show ALICE's default
+  ndtool --set-default-file-access ALICE:N,RWA,RWACD <image>   Change it
+                                            (@SET-DEFAULT-FILE-ACCESS; old files keep theirs)
 
 DELETE:
   ndtool --rm SYSTEM/OLD-FILE:DATA <image>
@@ -100,12 +108,13 @@ OBJECT BLOCKS (how many FILES a user may hold - not how much space):
   ndtool --takeobjblocks BIGMAN 1 <image>    Lower the maximum by 1
 
 FRIENDS (a user grants another user rights to its files):
-  ndtool --friends ALICE <image>             List ALICE's friends and rights
-  ndtool --friendadd ALICE:BOB:RWA <image>   Add BOB as ALICE's friend (rights RWA)
-  ndtool --frienddel ALICE:BOB <image>       Remove BOB from ALICE's friends
+  ndtool --friends ALICE <image>             List ALICE's friends and rights (@LIST-FRIENDS)
+  ndtool --friendadd ALICE:BOB:RWA <image>   Add BOB as ALICE's friend, rights RWA (@CREATE-FRIEND)
+  ndtool --frienddel ALICE:BOB <image>       Remove BOB from ALICE's friends (@DELETE-FRIEND)
+  ndtool --set-friend-access ALICE:BOB:W <image>  Change BOB's rights (@SET-FRIEND-ACCESS)
   ndtool --stat ALICE <image>                Show ALICE's details + friend list
     OWNER/FRIEND may be a user name or index (0-255). Rights letters:
-    R read  W write  A append  C common  D directory  (default RWA)
+    R read  W write  A append  C common  D directory  (default RWA); N = none
 
 DIAGNOSTICS:
   ndtool --fsck [-v] [--fix [-n] [-f] [--recover-orphans USER]] [--salvage DIR] <image>
@@ -565,6 +574,16 @@ $ ndtool --frienddel ALICE:BOB disk.ndfs
 Removed friend 'BOB' from 'ALICE'
 ```
 
+To change the rights of a friend who is already on the list, use
+`--set-friend-access` (SINTRAN's `@SET-FRIEND-ACCESS`); `--friendadd` refuses a
+friend who is already there. The rights are one SINTRAN access field: `N` for
+none (the friend stays on the list), or letters `RWACD`. `-n` previews:
+
+```
+$ ndtool --set-friend-access ALICE:BOB:W disk.ndfs
+Friend 'BOB' of 'ALICE': RWA-- -> W
+```
+
 If you omit the rights on `--friendadd`, the friend gets **RWA** by default.
 `--stat USER` (a name with no `/`) shows a user's quota, dates, default file
 access, and full friend list. A user may have at most 8 friends.
@@ -573,9 +592,12 @@ In the interactive shell the same operations are space-separated:
 
 ```
 ndtool> friendadd ALICE BOB RWA
+ndtool> set-friend-access ALICE BOB W
 ndtool> friends ALICE
 ndtool> frienddel ALICE BOB
 ndtool> stat ALICE
+ndtool> set-default-file-access ALICE N,RWA,RWACD
+ndtool> set-file-access ALICE/F-1:DATA N,N,RWACD
 ```
 
 ## Editing Files
@@ -887,7 +909,7 @@ Two kinds of path appear below:
 - **`PATH`** — a file **inside the image** (a SINTRAN file), written `USER/NAME:TYPE`, e.g. `SYSTEM/STARTUP:MODE`. This is *not* a file on your computer.
 - **`HOSTFILE`** — a file **on your computer** (the host OS), e.g. `./startup.txt`.
 
-> **The shell edits a copy of the image in memory.** Commands like `put`, `rm`, `chmod`, and `useradd` change that in-memory copy only — nothing is written to the `.ndfs` file until you run **`save`**. Quitting without saving discards your changes.
+> **The shell edits a copy of the image in memory.** Commands like `put`, `rm`, `chmod`, and `useradd` change that in-memory copy only — nothing is written to the `.ndfs` file until you run **`save`**. Quitting without saving discards your changes. (Up to 0.0.9 most of these commands wrote the file at once even in the shell; a unit test, `test_ndtool_image_file.c`, now holds the rule.)
 
 | Command | Description |
 |---------|-------------|
@@ -910,9 +932,13 @@ Two kinds of path appear below:
 | `quotadel NAME PAGES` | Remove pages from quota |
 | `passwd NAME` | Clear user password |
 | `release` | Clear the directory-entered flag and system number |
-| `friends USER` | List a user's friends and their rights |
-| `friendadd OWNER FRIEND [RWACD]` | Add a friend (default rights RWA) |
-| `frienddel OWNER FRIEND` | Remove a friend |
+| `chmod SPEC PATH` | Change a file's access (`OWN+WD,FRIEND=RW,PUBLIC-A`); SINTRAN's `@SET-FILE-ACCESS` |
+| `set-file-access PATH PUBLIC,FRIEND,OWN` | The same in SINTRAN's own form: each field `N` or `RWACD`, empty = no change |
+| `set-default-file-access USER [PUBLIC,FRIEND,OWN]` | Show or set the access USER's new files get (`@SET-DEFAULT-FILE-ACCESS`) |
+| `friends USER` | List a user's friends and their rights (`@LIST-FRIENDS`) |
+| `friendadd OWNER FRIEND [RWACD]` | Add a friend, default rights RWA (`@CREATE-FRIEND`) |
+| `frienddel OWNER FRIEND` | Remove a friend (`@DELETE-FRIEND`) |
+| `set-friend-access OWNER FRIEND RIGHTS` | Change a friend's rights, `N` or `RWACD` (`@SET-FRIEND-ACCESS`) |
 | `stat USER` | Show a user's details + friend list (a name with no `/`) |
 | `save [HOSTFILE]` | Save changes to disk (optional save-as) |
 | `help` | Show command list |
@@ -1001,7 +1027,8 @@ ndtool is inspired by [Tor Arntsen's ndfs tool](https://www.ndwiki.org/wiki/User
 | User management | No | Yes (`--useradd`, `--userdel`) |
 | Quota management | No | Yes (`--quotaadd`, `--quotadel`) |
 | Object blocks (files per user) | No | Yes (`--objblocks`, `--giveobjblocks`, `--takeobjblocks`) |
-| Friend management | No | Yes (`--friends`, `--friendadd`, `--frienddel`) |
+| Friend management | No | Yes (`--friends`, `--friendadd`, `--frienddel`, `--set-friend-access`) |
+| File access | No | Yes (`--chmod`, `--set-file-access`, `--set-default-file-access`) |
 | Password clearing | No | Yes (`--passwd`) |
 | Release an entered directory | No | Yes (`--release`) |
 | Image creation | No | Yes (`--create`) |

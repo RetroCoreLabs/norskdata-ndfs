@@ -70,6 +70,9 @@ static struct option long_options[] = {
     {"interactive", no_argument,     0, 1010},
     {"stat",      required_argument, 0, 1011},
     {"chmod",     required_argument, 0, 1012},
+    {"set-file-access",         required_argument, 0, 1050},
+    {"set-friend-access",       required_argument, 0, 1051},
+    {"set-default-file-access", required_argument, 0, 1052},
     {"pages",     required_argument, 0, 1001},
     {"bit-file",  required_argument, 0, 1020},
     {"boot",      required_argument, 0, 1021},
@@ -130,6 +133,10 @@ int main(int argc, char **argv)
     const char *dir_name = NULL;
     const char *stat_path = NULL;
     const char *chmod_spec = NULL;
+    /* The SINTRAN-form access commands (ND-60.128.5). */
+    const char *set_file_access = NULL;
+    const char *set_friend_access = NULL;
+    const char *set_default_access = NULL;
 
     int needs_write = 0;
 
@@ -194,6 +201,9 @@ int main(int argc, char **argv)
         case 1010: ctx.on_exist = NDTOOL_ON_EXIST_PROMPT; break;
         case 1011: stat_path = optarg; break;
         case 1012: chmod_spec = optarg; needs_write = 1; break;
+        case 1050: set_file_access = optarg; needs_write = 1; break;
+        case 1051: set_friend_access = optarg; needs_write = 1; break;
+        case 1052: set_default_access = optarg; needs_write = 1; break;
 
         case 1001:
             if (!ndtool_parse_u32(optarg, &custom_pages)) {
@@ -340,6 +350,14 @@ int main(int argc, char **argv)
         /* --chmod SPEC PATH <image>: PATH is the positional before the image. */
         const char *path = (optind < argc - 1) ? argv[optind] : NULL;
         ret = cmd_chmod(&ctx, chmod_spec, path);
+    } else if (set_file_access) {
+        /* --set-file-access ACCESS PATH <image>, the same shape as --chmod. */
+        const char *path = (optind < argc - 1) ? argv[optind] : NULL;
+        ret = cmd_set_file_access(&ctx, set_file_access, path);
+    } else if (set_friend_access) {
+        ret = cmd_set_friend_access(&ctx, set_friend_access);
+    } else if (set_default_access) {
+        ret = cmd_set_default_access(&ctx, set_default_access);
     } else if (mode_extract) {
         ret = cmd_extract(&ctx);
     } else if (put_local) {
@@ -444,9 +462,11 @@ static void print_usage(const char *prog)
     printf("                           file limit only; blocks are used on demand and\n");
     printf("                           no disk pages are reserved (see --quotaadd).\n");
     printf("  --takeobjblocks NAME N   Lower the object block maximum by N\n");
-    printf("  --friends USER           List USER's friends and their rights\n");
-    printf("  --friendadd OWNER:FRIEND[:RWACD]  Add a friend (default rights RWA)\n");
-    printf("  --frienddel OWNER:FRIEND          Remove a friend\n");
+    printf("  --friends USER           List USER's friends and their rights (@LIST-FRIENDS)\n");
+    printf("  --friendadd OWNER:FRIEND[:RWACD]  Add a friend, default rights RWA (@CREATE-FRIEND)\n");
+    printf("  --frienddel OWNER:FRIEND          Remove a friend (@DELETE-FRIEND)\n");
+    printf("  --set-friend-access OWNER:FRIEND:RIGHTS  Change an existing friend's rights\n");
+    printf("                  (@SET-FRIEND-ACCESS); RIGHTS = N or RWACD; -n previews\n");
     printf("                  OWNER/FRIEND may be a user name or index (0-255).\n");
     printf("                  Rights: R read W write A append C common D directory\n");
     printf("  --fsck          Full filesystem check. The last lines are IMAGE VERDICT: CLEAN, DAMAGED or\n");
@@ -464,7 +484,11 @@ static void print_usage(const char *prog)
     printf("                  naming the shared pages. The image is not changed.\n");
     printf("  --fsck-undo     Put back the pages saved in IMAGE.fsck-undo by the last --fix.\n");
     printf("  --stat PATH     Show detailed file metadata (add -v for block list)\n");
-    printf("  --chmod SPEC PATH   Change a file's access permissions\n");
+    printf("  --chmod SPEC PATH   Change a file's access permissions (@SET-FILE-ACCESS)\n");
+    printf("  --set-file-access PUBLIC,FRIEND,OWN PATH  The same, in SINTRAN's own form\n");
+    printf("                  (@SET-FILE-ACCESS F-1:DATA N,N,RWACD); -n previews\n");
+    printf("  --set-default-file-access USER[:PUBLIC,FRIEND,OWN]  The access USER's NEW files\n");
+    printf("                  get (@SET-DEFAULT-FILE-ACCESS); USER alone shows it; -n previews\n");
     printf("  --create TEMPLATE  Create new image\n");
     printf("  --shell         Interactive shell\n");
     printf("\nOptions:\n");
@@ -492,6 +516,10 @@ static void print_usage(const char *prog)
     printf("  Examples:  OWN+WD   OWN=RWACD,FRIEND=RW   PUBLIC-A   ALL=R\n");
     printf("  Raw form:  a 0x.. or decimal value sets the whole 15-bit word (0x03FF)\n");
     printf("  Use -n to preview the before -> after change without writing.\n");
+    printf("\nAccess in SINTRAN's own form (--set-file-access, --set-default-file-access):\n");
+    printf("  PUBLIC,FRIEND,OWN - that order, as in @SET-FILE-ACCESS. Each field is N (no\n");
+    printf("  access, alone) or letters RWACD; an EMPTY field leaves that tier unchanged.\n");
+    printf("  Examples:  N,N,RWACD   R,RWA,RWACD   ,RW,   N\n");
     printf("\nCreate templates:\n");
     printf("  floppy360       360 KB floppy (154 pages)\n");
     printf("  floppy12        1.2 MB floppy (512 pages)\n");
@@ -528,6 +556,9 @@ static void print_usage(const char *prog)
     printf("  %s --put '*.NPL' --dest TEST -p disk.ndfs\n", prog);
     printf("  %s --stat -v SYSTEM/LOAD:MODE disk.ndfs\n", prog);
     printf("  %s --chmod 'OWN+WD,PUBLIC-A' SYSTEM/LOAD:MODE disk.ndfs\n", prog);
+    printf("  %s --set-file-access N,N,RWACD SYSTEM/F-1:DATA disk.ndfs\n", prog);
+    printf("  %s --set-friend-access SYSTEM:RT:RWAC disk.ndfs\n", prog);
+    printf("  %s --set-default-file-access ALICE:N,RWA,RWACD disk.ndfs\n", prog);
     printf("  %s --create floppy360 --name MYDISK newdisk.ndfs\n", prog);
     printf("  %s --shell disk.ndfs\n", prog);
 }
@@ -595,63 +626,6 @@ void ndtool_to_ndfs_name(const char *host_name, char *out, size_t out_len)
     out[i] = '\0';
 }
 
-/* ── Helper: read local file ──────────────────────────────────────── */
-
-uint8_t *ndtool_read_local_file(const char *path, size_t *out_size)
-{
-    FILE *f;
-    uint8_t *data;
-    long fsize;
-
-    f = fopen(path, "rb");
-    if (!f) return NULL;
-
-    fseek(f, 0, SEEK_END);
-    fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    if (fsize < 0) {
-        fclose(f);
-        return NULL;
-    }
-
-    data = (uint8_t *)malloc((size_t)fsize);
-    if (!data) {
-        fclose(f);
-        return NULL;
-    }
-
-    if (fread(data, 1, (size_t)fsize, f) != (size_t)fsize) {
-        free(data);
-        fclose(f);
-        return NULL;
-    }
-
-    fclose(f);
-    *out_size = (size_t)fsize;
-    return data;
-}
-
-/* ── Helper: write local file ─────────────────────────────────────── */
-
-int ndtool_write_local_file(const char *path, const uint8_t *data, size_t size)
-{
-    FILE *f = fopen(path, "wb");
-    if (!f) {
-        fprintf(stderr, "Error: cannot create '%s'\n", path);
-        return -1;
-    }
-
-    if (fwrite(data, 1, size, f) != size) {
-        fprintf(stderr, "Error: write failed for '%s'\n", path);
-        fclose(f);
-        return -1;
-    }
-
-    fclose(f);
-    return 0;
-}
-
 /* ── Helper: wildcard detection ───────────────────────────────────── */
 
 bool ndtool_has_wildcard(const char *s)
@@ -696,29 +670,4 @@ bool ndtool_confirm_overwrite(ndtool_ctx_t *ctx, const char *what, bool exists)
         printf("  skipped (exists): %s\n", what);
         return false;
     }
-}
-
-/* ── Helper: save image ───────────────────────────────────────────── */
-
-int ndtool_save_image(ndtool_ctx_t *ctx)
-{
-    uint8_t *buf = NULL;
-    size_t buf_size = 0;
-    ndfs_error_t err;
-    int ret;
-
-    if (ctx->dry_run) {
-        printf("(dry run: not saving)\n");
-        return 0;
-    }
-
-    err = ndfs_to_buffer(ctx->fs, &buf, &buf_size);
-    if (err != NDFS_OK) {
-        fprintf(stderr, "Error: cannot export image: %s\n", ndfs_strerror(err));
-        return -1;
-    }
-
-    ret = ndtool_write_local_file(ctx->image_path, buf, buf_size);
-    ndfs_free_data(buf);
-    return ret;
 }

@@ -220,6 +220,72 @@ def test_friends_add_list_remove():
         fs.remove_friend("ALICE", "BOB")
 
 
+def test_set_friend_access():
+    """@SET-FRIEND-ACCESS: change an existing friend's rights in place."""
+    import pytest
+    fs = _make_fs()
+    for u in ("ALICE", "BOB", "CAROL"):
+        fs.add_user(u, 100)
+    fs.add_friend("ALICE", "BOB", "RWA")
+    fs.add_friend("ALICE", "CAROL", "R")
+
+    # The manual's example: @SET-FRIEND-ACCESS BUDDY,W
+    fs.set_friend_access("ALICE", "BOB", "W")
+    fr = fs.list_friends("ALICE")
+    assert [(f.name, f.perms) for f in fr] == [("BOB", "-W---"), ("CAROL", "R----")]
+
+    # "N" keeps BOB on the list with no rights; "" is no change.
+    fs.set_friend_access("ALICE", "BOB", "N")
+    fs.set_friend_access("ALICE", "CAROL", "")
+    fr = fs.list_friends("ALICE")
+    assert [(f.name, f.perms) for f in fr] == [("BOB", "-----"), ("CAROL", "R----")]
+
+    with pytest.raises(KeyError):
+        fs.set_friend_access("BOB", "ALICE", "R")     # not a friend
+    with pytest.raises(KeyError):
+        fs.set_friend_access("NOBODY", "BOB", "R")    # no such owner
+    for bad in ("RX", "NR"):
+        with pytest.raises(ValueError):
+            fs.set_friend_access("ALICE", "BOB", bad)
+
+    fs.set_friend_access("ALICE", "BOB", "rwacd")
+    fs2 = NdfsFileSystem(fs.to_buffer())
+    assert fs2.list_friends("ALICE")[0].perms == "RWACD"
+
+
+def test_set_file_access():
+    """@SET-FILE-ACCESS on an existing file, built from SINTRAN's form."""
+    import pytest
+    from ndfs.access_permissions import apply_access_triple
+    fs = _make_fs()
+    fs.add_user("ALICE", 100)
+    fs.write_file("ALICE/F-1:DATA", b"X")
+    before = fs.get_object_entry("F-1", "ALICE", "DATA").access_bits
+    fs.set_file_access("ALICE/F-1:DATA", apply_access_triple(before, "N,N,RWACD"))
+    assert fs.get_object_entry("F-1", "ALICE", "DATA").access_bits == 0x001F
+    fs2 = NdfsFileSystem(fs.to_buffer())
+    assert fs2.get_object_entry("F-1", "ALICE", "DATA").access_bits == 0x001F
+    with pytest.raises(KeyError):
+        fs.set_file_access("ALICE/NONE:DATA", 0)
+
+
+def test_set_default_file_access():
+    """@SET-DEFAULT-FILE-ACCESS: the user's default, and that it persists."""
+    import pytest
+    from ndfs.access_permissions import apply_access_triple
+    fs = _make_fs()
+    fs.add_user("ALICE", 100)
+    bits = apply_access_triple(fs.get_default_file_access("ALICE"), "N,RWA,RWACD")
+    fs.set_default_file_access("ALICE", bits)
+    assert fs.get_default_file_access("ALICE") == 0x00FF
+    fs2 = NdfsFileSystem(fs.to_buffer())
+    assert fs2.get_default_file_access("ALICE") == 0x00FF
+    with pytest.raises(KeyError):
+        fs.set_default_file_access("NOBODY", 0)
+    with pytest.raises(KeyError):
+        fs.get_default_file_access("NOBODY")
+
+
 def _raw_unreserved_pages(ndfs: NdfsFileSystem) -> int:
     """Read the on-disk "Unreserved Pages" master-block field directly from
     raw page-0 bytes, bypassing the filesystem API's parsed MasterBlock."""

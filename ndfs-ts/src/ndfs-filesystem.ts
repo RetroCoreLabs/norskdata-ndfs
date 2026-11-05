@@ -37,6 +37,7 @@ import { UserFile } from './user-file.js';
 import { ObjectFile } from './object-file.js';
 import { UserEntry } from './user-entry.js';
 import { UserFriend } from './user-friend.js';
+import { parseAccessRights } from './access-permissions.js';
 import {
   ObjectEntry,
   computeFileNumber,
@@ -765,6 +766,63 @@ export class NdfsFileSystem {
     const friendIndex = this.resolveFriendIndex(friendRef);
     if (!owner.removeFriend(friendIndex)) throw new Error(`Not a friend: ${friendRef}`);
     this.writeUserPage(owner.userIndex);
+  }
+
+  /**
+   * Change the rights of a user's EXISTING friend: the @SET-FRIEND-ACCESS
+   * equivalent. `rights` is one SINTRAN access field (N, or letters RWACD);
+   * an empty string means no change and writes nothing. The friend stays on
+   * the list even with "N". Throws if the owner is unknown, the friend is not
+   * on the list (use addFriend for a new one) or the letters are bad.
+   * Persists the owner's user page.
+   */
+  setFriendAccess(userRef: number | string, friendRef: number | string, rights: string): void {
+    this.ensureWritable();
+    const owner = this.resolveUserRef(userRef);
+    if (!owner) throw new Error(`No such user: ${userRef}`);
+    const friendIndex = this.resolveFriendIndex(friendRef);
+    const f = owner.getFriend(friendIndex);
+    if (!f) throw new Error(`Not a friend: ${friendRef}`);
+    if (!rights) return;
+    const permBits = parseAccessRights(rights);
+    // Same slot: the index and in-use bit stay, only rights bits 8-12 change.
+    f.setFriend(friendIndex, permBits);
+    this.writeUserPage(owner.userIndex);
+  }
+
+  /**
+   * Set the 15-bit access word of an existing file and persist it (only the
+   * file's object entry page is written). The @SET-FILE-ACCESS equivalent;
+   * use applyAccessTriple() to build the word from SINTRAN's
+   * PUBLIC,FRIEND,OWN form. Throws if the file does not exist.
+   */
+  setFileAccess(path: string, accessBits: number): void {
+    this.ensureWritable();
+    const obj = this.findObject(path);
+    if (!obj) throw new Error(`No such file: ${path}`);
+    obj.accessBits = accessBits & 0x7fff;
+    this.writeObjectPage(obj.objectIndex);
+  }
+
+  /**
+   * Set a user's DEFAULT file access: the access word a file gets when the
+   * user creates it (user entry offset 40). The @SET-DEFAULT-FILE-ACCESS
+   * equivalent. Existing files keep their own. Throws if there is no such
+   * user. Persists the user page.
+   */
+  setDefaultFileAccess(userRef: number | string, accessBits: number): void {
+    this.ensureWritable();
+    const user = this.resolveUserRef(userRef);
+    if (!user) throw new Error(`No such user: ${userRef}`);
+    user.defaultFileAccess = accessBits & 0x7fff;
+    this.writeUserPage(user.userIndex);
+  }
+
+  /** A user's default file access word. Throws if there is no such user. */
+  getDefaultFileAccess(userRef: number | string): number {
+    const user = this.resolveUserRef(userRef);
+    if (!user) throw new Error(`No such user: ${userRef}`);
+    return user.defaultFileAccess;
   }
 
   // ── Bitmap queries ─────────────────────────────────────────────────
@@ -1702,7 +1760,10 @@ export class NdfsFileSystem {
     // The logical extent remains ceil(bytesInFile / NDFS_PAGE_SIZE), which is what
     // getFileBlocks uses to walk the index.
     entry.pagesInFile = this.countRealDataPages(fileData, holes);
-    entry.bytesInFile = fileData.length > 0 ? fileData.length : 1;
+    // An empty file is 0 bytes, as SINTRAN records one it creates (measured 2026-11-04:
+    // @CREATE-FILE ACCTEST:SYMB,0 on nd100x stores 0xFFFFFFFF, i.e. 0 bytes). This used to
+    // store 1 for an empty file, so it came back out as 1 byte.
+    entry.bytesInFile = fileData.length;
     entry.filePointer = new BlockPointer(topBlockId, pointerType);
     // A new file inherits the OWNING USER's default file access, which is what
     // SINTRAN does (@SET-DEFAULT-FILE-ACCESS sets the value copied onto every
@@ -1844,7 +1905,11 @@ export class NdfsFileSystem {
     // Points straight at the first data page. There is no index block to walk: page N of
     // the file is simply block (filePointer.blockId + N).
     entry.filePointer = new BlockPointer(startBlock, PointerType.Contiguous);
-    entry.accessBits = ACCESS_DEFAULT;
+    // The owner's default file access, as for an indexed file: SINTRAN gives a new
+    // contiguous file the same (measured 2026-11-04 on nd100x: with SYSTEM's default set
+    // to N,RW,RWACD, @CREATE-FILE ACCCON:DATA,4 stored 0x007F). This used to be a flat
+    // ACCESS_DEFAULT (0x03FF). Same fallback as the indexed create site.
+    entry.accessBits = user.defaultFileAccess ? user.defaultFileAccess & 0x7fff : ACCESS_DEFAULT;
 
     // Contiguous, not indexed -- the flag SINTRAN prints as "CONTINUOUS FILE".
     entry.fileTypeFlags = FT_CONTIGUOUS;
@@ -1941,7 +2006,7 @@ export class NdfsFileSystem {
     // Update existing entry
     // Allocated count, not the logical extent - see the note at the create site.
     existing.pagesInFile = this.countRealDataPages(fileData, holes);
-    existing.bytesInFile = fileData.length > 0 ? fileData.length : 1;
+    existing.bytesInFile = fileData.length; // 0 stays 0 - see the create site
     existing.filePointer = new BlockPointer(topBlockId, pointerType);
 
     // Update user pages used. Quota tracks only REAL disk consumption: charge

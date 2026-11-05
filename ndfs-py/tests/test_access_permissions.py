@@ -63,3 +63,33 @@ class TestAccessPermissionsOwnerOnly:
         assert p.can_delete(FileAccessType.Own) is True
         assert p.can_read(FileAccessType.Friend) is False
         assert p.can_read(FileAccessType.Public) is False
+
+
+class TestSintranAccessForm:
+    """SINTRAN's access fields: one field, then the PUBLIC,FRIEND,OWN triple
+    (@SET-FILE-ACCESS, SINTRAN III Reference Manual ND-60.128.5)."""
+
+    def test_one_field(self):
+        from ndfs.access_permissions import parse_access_rights
+        assert parse_access_rights("N") == 0
+        assert parse_access_rights("DCAWR") == 0x1F
+        assert parse_access_rights("ra") == 0x05
+        for bad in ("", "NR", "X"):
+            with pytest.raises(ValueError):
+                parse_access_rights(bad)
+
+    def test_triple(self):
+        from ndfs.access_permissions import apply_access_triple
+        # @SET-FILE-ACCESS F-1:DATA N,N,RWACD -> owner only.
+        assert apply_access_triple(0x07FF, "N,N,RWACD") == 0x001F
+        # The generated default (rule 2 of @SET-DEFAULT-FILE-ACCESS):
+        # public READ, friend RWA, owner all = 0x04FF.
+        assert apply_access_triple(0, "R,RWA,RWACD") == 0x04FF
+        # Empty fields keep their tier.
+        assert apply_access_triple(0x04FF, ",,N") == 0x04E0
+        assert apply_access_triple(0x04FF, "N") == 0x00FF
+        assert apply_access_triple(0x04FF, "") == 0x04FF
+        assert apply_access_triple(0, "R, RWA, RWACD") == 0x04FF
+        for bad in ("R,R,R,R", "R,NW,R"):
+            with pytest.raises(ValueError):
+                apply_access_triple(0, bad)

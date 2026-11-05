@@ -40,6 +40,22 @@ function entryOf(fs: NdfsFileSystem, objectName: string): ObjectEntry | null {
 }
 
 describe('CreateContiguousFile', () => {
+  // A new file gets its owner's default access, indexed and contiguous alike, and an empty
+  // file stays 0 bytes. Measured 2026-11-04 on nd100x: with SYSTEM's default set to
+  // N,RW,RWACD, @CREATE-FILE ACCTEST:SYMB,0 and @CREATE-FILE ACCCON:DATA,4 both stored 0x007F,
+  // with 0xFFFFFFFF (0 bytes) in the bytes field.
+  it("gives new files the owner's default access and keeps an empty file at 0 bytes", () => {
+    const fs = createFS();
+    fs.setDefaultFileAccess('SYSTEM', 0x007f);
+    fs.writeFile('SYSTEM/NEWIDX:SYMB', new Uint8Array([0x58, 0x0d, 0x0a]));
+    fs.writeFile('SYSTEM/EMPTY:SYMB', new Uint8Array(0));
+    fs.createContiguousFile('SYSTEM/NEWCON:DATA', 4);
+    expect(entryOf(fs, 'NEWIDX')!.accessBits).toBe(0x007f);
+    expect(entryOf(fs, 'NEWCON')!.accessBits).toBe(0x007f);
+    expect(entryOf(fs, 'NEWCON')!.bytesInFile).toBe(0);
+    expect(entryOf(fs, 'EMPTY')!.bytesInFile).toBe(0);
+  });
+
   it('flags the entry contiguous and sizes it to the reservation', () => {
     // The three fields a SINTRAN client reads back off the object entry -- together
     // they are what make the machine print "CONTINUOUS FILE" with zero bytes.

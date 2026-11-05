@@ -255,6 +255,16 @@ int cmd_release(ndtool_ctx_t *ctx)
  * passes the same packed forms. */
 
 /* Split "a:b[:c]" in place into up to 3 fields. Returns the field count. */
+/* Portable case-insensitive string compare (avoids strcasecmp/_stricmp). */
+static int ci_equal(const char *a, const char *b)
+{
+    while (*a && *b) {
+        if (toupper((unsigned char)*a) != toupper((unsigned char)*b)) return 0;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
 static int split_colon(char *s, char *fields[3])
 {
     int n = 0;
@@ -337,6 +347,141 @@ int cmd_friend_del(ndtool_ctx_t *ctx, const char *arg)
     }
     if (ndtool_save_image(ctx) != 0) return -1;
     printf("Removed friend '%s' from '%s'\n", friend, owner);
+    ctx->modified = false;
+    return 0;
+}
+
+/*
+ * --set-friend-access OWNER:FRIEND:RIGHTS -- the @SET-FRIEND-ACCESS
+ * equivalent: change the rights of a friend already on OWNER's list.
+ * RIGHTS is N or letters RWACD (an empty RIGHTS changes nothing).
+ */
+int cmd_set_friend_access(ndtool_ctx_t *ctx, const char *arg)
+{
+    char buf[96];
+    char *f[3];
+    const char *owner, *friend, *rights;
+    ndfs_friend_info_t *friends = NULL;
+    size_t count = 0, i;
+    const char *old = NULL;
+    ndfs_error_t err;
+    uint8_t r;
+    int n;
+
+    strncpy(buf, arg ? arg : "", sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    n = split_colon(buf, f);
+    if (n < 3 || !f[0][0] || !f[1][0]) {
+        fprintf(stderr, "Usage: --set-friend-access OWNER:FRIEND:RIGHTS   (RIGHTS = N or RWACD)\n");
+        return -1;
+    }
+    owner = f[0];
+    friend = f[1];
+    rights = f[2];
+    if (rights[0] && ndfs_parse_access_rights(rights, &r) != NDFS_OK) {
+        fprintf(stderr, "Bad rights '%s': N alone, or letters R W A C D\n", rights);
+        return -1;
+    }
+
+    /* Show the old rights; this also proves the friend is on the list. */
+    err = ndfs_list_friends(ctx->fs, owner, &friends, &count);
+    if (err != NDFS_OK) {
+        fprintf(stderr, "Error: no such user '%s'\n", owner);
+        return -1;
+    }
+    for (i = 0; i < count; i++) {
+        char idx[8];
+        snprintf(idx, sizeof(idx), "%u", friends[i].index);
+        if ((friends[i].name[0] && ci_equal(friends[i].name, friend)) ||
+            strcmp(idx, friend) == 0) {
+            old = friends[i].perms;
+            break;
+        }
+    }
+    if (!old) {
+        fprintf(stderr, "'%s' is not a friend of '%s' (add it with --friendadd)\n",
+                friend, owner);
+        ndfs_free_friends(friends);
+        return -1;
+    }
+    printf("Friend '%s' of '%s': %s -> %s%s\n", friend, owner, old,
+           rights[0] ? rights : "(no change)", ctx->dry_run ? "  [dry run]" : "");
+    ndfs_free_friends(friends);
+    if (ctx->dry_run || !rights[0]) return 0;
+
+    err = ndfs_set_friend_access(ctx->fs, owner, friend, rights);
+    if (err != NDFS_OK) {
+        fprintf(stderr, "Error setting friend access: %s\n", ndfs_strerror(err));
+        return -1;
+    }
+    if (ndtool_save_image(ctx) != 0) return -1;
+    ctx->modified = false;
+    return 0;
+}
+
+/*
+ * --set-default-file-access USER[:PUBLIC,FRIEND,OWN] -- the
+ * @SET-DEFAULT-FILE-ACCESS equivalent: the access a file gets when USER
+ * creates it. Existing files keep theirs. USER alone shows the current one.
+ */
+int cmd_set_default_access(ndtool_ctx_t *ctx, const char *arg)
+{
+    char buf[96];
+    char *colon;
+    const char *user, *access;
+    uint16_t before, bits;
+    char o1[64], f1[64], p1[64], o2[64], f2[64], p2[64];
+    ndfs_error_t err;
+
+    strncpy(buf, arg ? arg : "", sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+    colon = strchr(buf, ':');
+    if (colon) *colon = '\0';
+    user = buf;
+    access = colon ? colon + 1 : NULL;
+    if (!user[0]) {
+        fprintf(stderr, "Usage: --set-default-file-access USER:PUBLIC,FRIEND,OWN   (e.g. ALICE:N,RWA,RWACD)\n");
+        return -1;
+    }
+
+    err = ndfs_get_default_file_access(ctx->fs, user, &before);
+    if (err != NDFS_OK) {
+        fprintf(stderr, "Error: no such user '%s'\n", user);
+        return -1;
+    }
+    bits = before;
+    if (access && ndfs_apply_access_triple(before, access, &bits) != NDFS_OK) {
+        fprintf(stderr, "Bad access '%s': give PUBLIC,FRIEND,OWN, each N or letters RWACD, "
+                        "empty = no change\n", access);
+        return -1;
+    }
+
+    ndtool_access_tier_str(before, NDFS_ACC_OWN_SHIFT, o1, sizeof(o1));
+    ndtool_access_tier_str(before, NDFS_ACC_FRIEND_SHIFT, f1, sizeof(f1));
+    ndtool_access_tier_str(before, NDFS_ACC_PUBLIC_SHIFT, p1, sizeof(p1));
+    ndtool_access_tier_str(bits, NDFS_ACC_OWN_SHIFT, o2, sizeof(o2));
+    ndtool_access_tier_str(bits, NDFS_ACC_FRIEND_SHIFT, f2, sizeof(f2));
+    ndtool_access_tier_str(bits, NDFS_ACC_PUBLIC_SHIFT, p2, sizeof(p2));
+    printf("Default file access of '%s'  (0x%04X -> 0x%04X)\n", user, before, bits);
+    printf("  PUBLIC : %-30s -> %s\n", p1, p2);
+    printf("  FRIEND : %-30s -> %s\n", f1, f2);
+    printf("  OWN    : %-30s -> %s\n", o1, o2);
+
+    if (!access) return 0;
+    if (ctx->dry_run) {
+        printf("(dry run: not written)\n");
+        return 0;
+    }
+    if (bits == before) {
+        printf("(no change)\n");
+        return 0;
+    }
+    err = ndfs_set_default_file_access(ctx->fs, user, bits);
+    if (err != NDFS_OK) {
+        fprintf(stderr, "Error setting default file access: %s\n", ndfs_strerror(err));
+        return -1;
+    }
+    if (ndtool_save_image(ctx) != 0) return -1;
     ctx->modified = false;
     return 0;
 }

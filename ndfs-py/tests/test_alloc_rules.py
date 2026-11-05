@@ -155,6 +155,21 @@ class TestFileSystemPlacement:
         assert entry_of(ndfs, "C1:DATA").file_pointer.block_id == 36935
         assert entry_of(ndfs, "C2:DATA").file_pointer.block_id == 36915
 
+    def test_new_files_get_owner_default_access(self):
+        # A new file gets its owner's default access, indexed and contiguous alike, and an
+        # empty file stays 0 bytes. Measured 2026-11-04 on nd100x: with SYSTEM's default set to
+        # N,RW,RWACD, @CREATE-FILE ACCTEST:SYMB,0 and @CREATE-FILE ACCCON:DATA,4 both stored
+        # 0x007F, with 0xFFFFFFFF (0 bytes) in the bytes field.
+        ndfs = new_smd75()
+        ndfs.set_default_file_access("SYSTEM", 0x007F)
+        ndfs.write_file("SYSTEM/NEWIDX:SYMB", b"X\r\n")
+        ndfs.write_file("SYSTEM/EMPTY:SYMB", b"")
+        ndfs.create_contiguous_file("SYSTEM/NEWCON:DATA", 4)
+        assert entry_of(ndfs, "NEWIDX:SYMB").access_bits == 0x007F
+        assert entry_of(ndfs, "NEWCON:DATA").access_bits == 0x007F
+        assert entry_of(ndfs, "NEWCON:DATA").bytes_in_file == 0
+        assert entry_of(ndfs, "EMPTY:SYMB").bytes_in_file == 0
+
     def test_single_page_file_uses_block_rule(self):
         ndfs = new_smd75()
         ndfs.create_contiguous_file("SYSTEM/N1:DATA", 1)

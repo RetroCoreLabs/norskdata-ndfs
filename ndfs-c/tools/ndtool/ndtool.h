@@ -39,6 +39,10 @@ typedef struct {
     const char *create_boot_file; /* --boot-file FILE: boot area bytes from this file */
     ndtool_on_exist_t on_exist; /* collision policy for existing targets */
     bool modified;
+    /* Shell: commands change only the in-memory copy; `save` writes the file.
+     * See image_file.c. */
+    bool in_shell;
+    bool shell_unsaved;  /* a command changed the copy since the last save */
     bool use_xat;       /* --xat: write/read .xat sidecar files */
     const char *editor;     /* custom editor command, NULL = auto-detect */
 } ndtool_ctx_t;
@@ -57,6 +61,9 @@ uint8_t *ndtool_read_local_file(const char *path, size_t *out_size);
 
 /* Helper: write buffer to local file */
 int ndtool_write_local_file(const char *path, const uint8_t *data, size_t size);
+
+/* Write the image file now (the shell's `save`). */
+int ndtool_write_image(ndtool_ctx_t *ctx);
 
 /* Helper: save modified image back to disk */
 int ndtool_save_image(ndtool_ctx_t *ctx);
@@ -113,6 +120,12 @@ int cmd_create(ndtool_ctx_t *ctx, const char *template_name, uint32_t custom_pag
 int cmd_shell(ndtool_ctx_t *ctx);
 int cmd_stat(ndtool_ctx_t *ctx, const char *path, bool verbose);
 int cmd_chmod(ndtool_ctx_t *ctx, const char *spec, const char *path);
+/* @SET-FILE-ACCESS: ACCESS = "PUBLIC,FRIEND,OWN" in SINTRAN's own form. */
+int cmd_set_file_access(ndtool_ctx_t *ctx, const char *access, const char *path);
+/* @SET-FRIEND-ACCESS: OWNER:FRIEND:RIGHTS. */
+int cmd_set_friend_access(ndtool_ctx_t *ctx, const char *arg);
+/* @SET-DEFAULT-FILE-ACCESS: USER:PUBLIC,FRIEND,OWN (a USER alone shows it). */
+int cmd_set_default_access(ndtool_ctx_t *ctx, const char *arg);
 
 /* --fsck: check, optional safe repairs, salvage. Returns the exit code (0 CLEAN, 1 DAMAGED, 2 FAILED, 3 tool error). */
 int cmd_fsck(ndtool_ctx_t *ctx, bool fix, const char *recover_user, const char *salvage_dir);

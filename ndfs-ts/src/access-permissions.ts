@@ -118,3 +118,63 @@ export class AccessPermissions {
     );
   }
 }
+
+// ── Access rights in SINTRAN's own form ─────────────────────────────
+//
+// SINTRAN writes access as one field per tier: "N" for no access, or any
+// combination of R read, W write, A append, C common, D directory; "N" must
+// stand alone (@SET-FILE-ACCESS rule 2, SINTRAN III Reference Manual
+// ND-60.128.5). The commands that set all three tiers take them in the order
+// PUBLIC, FRIEND, OWN, and an empty field means "no change":
+//   @SET-FILE-ACCESS F-1:DATA N,N,RWACD
+//   @SET-DEFAULT-FILE-ACCESS N,RWA,RWACD
+// Mirrors ndfs_parse_access_rights / ndfs_apply_access_triple in ndfs-c.
+
+const RIGHT_BITS: Record<string, number> = { R: 0x01, W: 0x02, A: 0x04, C: 0x08, D: 0x10 };
+
+/** SINTRAN's field order PUBLIC, FRIEND, OWN as shifts in the 15-bit word. */
+const TRIPLE_SHIFTS = [10, 5, 0];
+
+/**
+ * Parse one SINTRAN access field into a 5-bit tier value. Letters in any
+ * order and case; "N" gives 0. Throws for an empty field, an unknown letter,
+ * or N together with other letters.
+ */
+export function parseAccessRights(s: string): number {
+  if (!s) throw new Error('empty access field');
+  let rights = 0;
+  let none = false;
+  let letters = false;
+  const up = s.toUpperCase();
+  for (let i = 0; i < up.length; i++) {
+    const ch = up[i];
+    if (ch === 'N') {
+      none = true;
+    } else if (ch in RIGHT_BITS) {
+      rights |= RIGHT_BITS[ch];
+      letters = true;
+    } else {
+      throw new Error(`bad access letter '${ch}' in '${s}'`);
+    }
+  }
+  if (none && letters) throw new Error(`N must stand alone: '${s}'`);
+  return rights;
+}
+
+/**
+ * Apply "<public>,<friend>,<own>" to a 15-bit access word. A missing or empty
+ * field keeps that tier as it is in `old` ("N,,RWACD" changes PUBLIC and OWN
+ * only). Spaces are ignored. Throws for a bad field or more than three.
+ */
+export function applyAccessTriple(old: number, triple: string): number {
+  const fields = triple.replace(/ /g, '').split(',');
+  if (fields.length > 3) throw new Error(`more than three access fields: '${triple}'`);
+  let bits = old & 0x7fff;
+  for (let k = 0; k < fields.length; k++) {
+    if (fields[k]) {
+      const shift = TRIPLE_SHIFTS[k];
+      bits = (bits & ~(0x1f << shift)) | (parseAccessRights(fields[k]) << shift);
+    }
+  }
+  return bits;
+}

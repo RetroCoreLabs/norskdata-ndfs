@@ -92,6 +92,9 @@ set(TEST_SOURCES
     # exact text of `ndtool -u` / shell `users` is checked. It depends on
     # the library headers only, not on the rest of ndtool.
     tools/ndtool/user_row.c
+    tests/test_ndtool_image_file.c
+    # Reading/writing the image file and the shell's save rule.
+    tools/ndtool/image_file.c
 )
 
 add_executable(ndfs_tests ${TEST_SOURCES})
@@ -128,6 +131,7 @@ add_executable(ndtool
     tools/ndtool/cmd_shell.c
     tools/ndtool/parity.c
     tools/ndtool/user_row.c
+    tools/ndtool/image_file.c
 )
 target_link_libraries(ndtool ndfs)
 target_include_directories(ndtool PRIVATE ${CMAKE_SOURCE_DIR}/include tools/ndtool)

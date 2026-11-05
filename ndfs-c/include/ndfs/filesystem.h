@@ -361,6 +361,59 @@ ndfs_error_t ndfs_add_friend(ndfs_filesystem_t *fs, const char *user_ref,
 ndfs_error_t ndfs_remove_friend(ndfs_filesystem_t *fs, const char *user_ref,
                                 const char *friend_ref);
 
+/**
+ * Change the rights of a user's EXISTING friend: the @SET-FRIEND-ACCESS
+ * equivalent (SINTRAN III Reference Manual ND-60.128.5). @p rights is one
+ * SINTRAN access field (see ndfs_parse_access_rights); NULL or "" means no
+ * change, as in SINTRAN, and writes nothing. The friend stays on the list
+ * even with "N". Errors: NDFS_ERR_NOT_FOUND (owner unknown, or the friend is
+ * not on the owner's list - use ndfs_add_friend for a new one),
+ * NDFS_ERR_INVALID_ARG (bad letters). Persists the owner's user page.
+ */
+ndfs_error_t ndfs_set_friend_access(ndfs_filesystem_t *fs, const char *user_ref,
+                                    const char *friend_ref, const char *rights);
+
+/* ── Access rights in SINTRAN's own form ─────────────────────────────
+ *
+ * SINTRAN writes access as one field per tier: "N" for no access, or any
+ * combination of R read, W write, A append, C common, D directory; "N" must
+ * stand alone (@SET-FILE-ACCESS rule 2, ND-60.128.5). The commands that set
+ * all three tiers take them in the order PUBLIC, FRIEND, OWN, and an empty
+ * field means "no change":
+ *   @SET-FILE-ACCESS F-1:DATA N,N,RWACD
+ *   @SET-DEFAULT-FILE-ACCESS N,RWA,RWACD
+ */
+
+/**
+ * Parse one SINTRAN access field into a 5-bit tier value (NDFS_ACC_* bits).
+ * Letters in any order and case; "N" gives 0. Errors: NDFS_ERR_INVALID_ARG
+ * for an empty field, an unknown letter, or N together with other letters.
+ */
+ndfs_error_t ndfs_parse_access_rights(const char *s, uint8_t *out_rights);
+
+/**
+ * Apply "<public>,<friend>,<own>" to a 15-bit access word. A missing or empty
+ * field keeps that tier as it is in @p old ("N,,RWACD" changes PUBLIC and
+ * OWN only). Errors: NDFS_ERR_INVALID_ARG (bad field, more than three).
+ */
+ndfs_error_t ndfs_apply_access_triple(uint16_t old, const char *triple,
+                                      uint16_t *out_bits);
+
+/**
+ * Set a user's DEFAULT file access: the access word a file gets when the
+ * user creates it (user entry offset 40). The @SET-DEFAULT-FILE-ACCESS
+ * equivalent. Existing files keep their own access. Persists the user page.
+ * Errors: NDFS_ERR_NOT_FOUND (no such user), NDFS_ERR_READ_ONLY.
+ */
+ndfs_error_t ndfs_set_default_file_access(ndfs_filesystem_t *fs,
+                                          const char *user_ref,
+                                          uint16_t access_bits);
+
+/** Read a user's default file access word. NDFS_ERR_NOT_FOUND if no such user. */
+ndfs_error_t ndfs_get_default_file_access(const ndfs_filesystem_t *fs,
+                                          const char *user_ref,
+                                          uint16_t *out_bits);
+
 /* ── Read operations (extended) ──────────────────────────────────── */
 
 /**

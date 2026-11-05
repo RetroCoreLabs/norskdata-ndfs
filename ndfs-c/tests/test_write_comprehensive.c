@@ -741,6 +741,134 @@ static int test_friends_add_list_remove(void)
     return 0;
 }
 
+/* @SET-FRIEND-ACCESS: change an existing friend's rights in place. */
+static int test_set_friend_access(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_360KB, "FRACC");
+    ndfs_friend_info_t *fr = NULL;
+    size_t n = 0;
+    uint8_t *exported = NULL;
+    size_t exported_size = 0;
+    ndfs_filesystem_t *fs2 = NULL;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_add_user(fs, "ALICE", 100));
+    TEST_ASSERT_OK(ndfs_add_user(fs, "BOB", 100));
+    TEST_ASSERT_OK(ndfs_add_user(fs, "CAROL", 100));
+    TEST_ASSERT_OK(ndfs_add_friend(fs, "ALICE", "BOB", "RWA"));
+    TEST_ASSERT_OK(ndfs_add_friend(fs, "ALICE", "CAROL", "R"));
+
+    /* The manual's example: @SET-FRIEND-ACCESS BUDDY,W */
+    TEST_ASSERT_OK(ndfs_set_friend_access(fs, "ALICE", "BOB", "W"));
+    TEST_ASSERT_OK(ndfs_list_friends(fs, "ALICE", &fr, &n));
+    TEST_ASSERT_EQUAL(2, n);
+    /* Same slot order, BOB changed, CAROL untouched. */
+    TEST_ASSERT_EQUAL_STRING("BOB", fr[0].name);
+    TEST_ASSERT_EQUAL_STRING("-W---", fr[0].perms);
+    TEST_ASSERT_EQUAL_STRING("CAROL", fr[1].name);
+    TEST_ASSERT_EQUAL_STRING("R----", fr[1].perms);
+    ndfs_free_friends(fr); fr = NULL;
+
+    /* "N" leaves BOB on the list with no rights; "" is no change. */
+    TEST_ASSERT_OK(ndfs_set_friend_access(fs, "ALICE", "BOB", "N"));
+    TEST_ASSERT_OK(ndfs_set_friend_access(fs, "ALICE", "CAROL", ""));
+    TEST_ASSERT_OK(ndfs_list_friends(fs, "ALICE", &fr, &n));
+    TEST_ASSERT_EQUAL(2, n);
+    TEST_ASSERT_EQUAL_STRING("-----", fr[0].perms);
+    TEST_ASSERT_EQUAL_STRING("R----", fr[1].perms);
+    ndfs_free_friends(fr); fr = NULL;
+
+    /* Not a friend, unknown owner, bad letters, N mixed with letters. */
+    TEST_ASSERT_EQUAL(NDFS_ERR_NOT_FOUND, ndfs_set_friend_access(fs, "BOB", "ALICE", "R"));
+    TEST_ASSERT_EQUAL(NDFS_ERR_NOT_FOUND, ndfs_set_friend_access(fs, "NOBODY", "BOB", "R"));
+    TEST_ASSERT_EQUAL(NDFS_ERR_INVALID_ARG, ndfs_set_friend_access(fs, "ALICE", "BOB", "RX"));
+    TEST_ASSERT_EQUAL(NDFS_ERR_INVALID_ARG, ndfs_set_friend_access(fs, "ALICE", "BOB", "NR"));
+
+    /* Survives export + reload. */
+    TEST_ASSERT_OK(ndfs_set_friend_access(fs, "ALICE", "BOB", "rwacd"));
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &exported, &exported_size));
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(exported, exported_size, true, &fs2));
+    TEST_ASSERT_OK(ndfs_list_friends(fs2, "ALICE", &fr, &n));
+    TEST_ASSERT_EQUAL(2, n);
+    TEST_ASSERT_EQUAL_STRING("RWACD", fr[0].perms);
+    ndfs_free_friends(fr); fr = NULL;
+    ndfs_close(fs2);
+    ndfs_free_data(exported);
+
+    ndfs_close(fs);
+    return 0;
+}
+
+/* SINTRAN's access fields: one field, then the PUBLIC,FRIEND,OWN triple. */
+static int test_access_triple(void)
+{
+    uint8_t r = 0xFF;
+    uint16_t bits = 0;
+
+    TEST_ASSERT_OK(ndfs_parse_access_rights("N", &r));
+    TEST_ASSERT_EQUAL(0, r);
+    TEST_ASSERT_OK(ndfs_parse_access_rights("DCAWR", &r));
+    TEST_ASSERT_EQUAL(0x1F, r);
+    TEST_ASSERT_OK(ndfs_parse_access_rights("ra", &r));
+    TEST_ASSERT_EQUAL(NDFS_ACC_READ | NDFS_ACC_APPEND, r);
+    TEST_ASSERT_EQUAL(NDFS_ERR_INVALID_ARG, ndfs_parse_access_rights("", &r));
+    TEST_ASSERT_EQUAL(NDFS_ERR_INVALID_ARG, ndfs_parse_access_rights("NR", &r));
+    TEST_ASSERT_EQUAL(NDFS_ERR_INVALID_ARG, ndfs_parse_access_rights("X", &r));
+
+    /* @SET-FILE-ACCESS F-1:DATA N,N,RWACD -> owner only. */
+    TEST_ASSERT_OK(ndfs_apply_access_triple(0x07FF, "N,N,RWACD", &bits));
+    TEST_ASSERT_EQUAL(0x001F, bits);
+    /* The generated default, per @SET-DEFAULT-FILE-ACCESS rule 2:
+     * public READ, friend RWA, owner all = 0x04FF (the user entry default). */
+    TEST_ASSERT_OK(ndfs_apply_access_triple(0, "R,RWA,RWACD", &bits));
+    TEST_ASSERT_EQUAL(0x04FF, bits);
+    /* Empty fields keep their tier. */
+    TEST_ASSERT_OK(ndfs_apply_access_triple(0x04FF, ",,N", &bits));
+    TEST_ASSERT_EQUAL(0x04E0, bits);
+    TEST_ASSERT_OK(ndfs_apply_access_triple(0x04FF, "N", &bits));
+    TEST_ASSERT_EQUAL(0x00FF, bits);
+    TEST_ASSERT_OK(ndfs_apply_access_triple(0x04FF, "", &bits));
+    TEST_ASSERT_EQUAL(0x04FF, bits);
+    TEST_ASSERT_OK(ndfs_apply_access_triple(0x0000, "R, RWA, RWACD", &bits));
+    TEST_ASSERT_EQUAL(0x04FF, bits);
+    /* Four fields, or a bad field, is refused. */
+    TEST_ASSERT_EQUAL(NDFS_ERR_INVALID_ARG, ndfs_apply_access_triple(0, "R,R,R,R", &bits));
+    TEST_ASSERT_EQUAL(NDFS_ERR_INVALID_ARG, ndfs_apply_access_triple(0, "R,NW,R", &bits));
+    return 0;
+}
+
+/* @SET-DEFAULT-FILE-ACCESS: the user's default, and what a new file gets. */
+static int test_set_default_file_access(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_360KB, "DEFACC");
+    uint16_t bits = 0;
+    uint8_t *exported = NULL;
+    size_t exported_size = 0;
+    ndfs_filesystem_t *fs2 = NULL;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_add_user(fs, "ALICE", 100));
+    TEST_ASSERT_OK(ndfs_get_default_file_access(fs, "ALICE", &bits));
+    TEST_ASSERT_OK(ndfs_apply_access_triple(bits, "N,RWA,RWACD", &bits));
+    TEST_ASSERT_OK(ndfs_set_default_file_access(fs, "ALICE", bits));
+    TEST_ASSERT_OK(ndfs_get_default_file_access(fs, "ALICE", &bits));
+    TEST_ASSERT_EQUAL(0x00FF, bits);
+
+    TEST_ASSERT_EQUAL(NDFS_ERR_NOT_FOUND, ndfs_set_default_file_access(fs, "NOBODY", 0));
+    TEST_ASSERT_EQUAL(NDFS_ERR_NOT_FOUND, ndfs_get_default_file_access(fs, "NOBODY", &bits));
+
+    /* Survives export + reload. */
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &exported, &exported_size));
+    TEST_ASSERT_OK(ndfs_open_buffer_copy(exported, exported_size, true, &fs2));
+    TEST_ASSERT_OK(ndfs_get_default_file_access(fs2, "ALICE", &bits));
+    TEST_ASSERT_EQUAL(0x00FF, bits);
+    ndfs_close(fs2);
+    ndfs_free_data(exported);
+
+    ndfs_close(fs);
+    return 0;
+}
+
 /* ---- SubIndexed (large file, >512 pages) write support ----
  *
  * NDFS-FORMAT.md "Sub-Indexed (Type 10)": a top-level sub-index block holds
@@ -1910,6 +2038,9 @@ void run_write_comprehensive_tests(void)
     TEST_SUITE_BEGIN("Write Comprehensive Tests");
     RUN_TEST(test_surgical_write_preserves_empty_type);
     RUN_TEST(test_friends_add_list_remove);
+    RUN_TEST(test_set_friend_access);
+    RUN_TEST(test_access_triple);
+    RUN_TEST(test_set_default_file_access);
     RUN_TEST(test_write_small_file);
     RUN_TEST(test_write_multi_page_file);
     RUN_TEST(test_overwrite_file);

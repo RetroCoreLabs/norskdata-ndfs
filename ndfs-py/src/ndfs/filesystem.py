@@ -40,6 +40,7 @@ from ndfs.user_file import UserFile
 from ndfs.object_file import ObjectFile
 from ndfs.user_entry import UserEntry
 from ndfs.user_friend import UserFriend
+from ndfs.access_permissions import parse_access_rights
 from ndfs.object_entry import (
     ObjectEntry,
     ACCESS_DEFAULT,
@@ -570,6 +571,63 @@ class NdfsFileSystem:
         if not owner.remove_friend(friend_index):
             raise KeyError(f"Not a friend: {friend_ref}")
         self._write_user_page(owner.user_index)
+
+    def set_friend_access(self, user_ref: Union[int, str],
+                          friend_ref: Union[int, str],
+                          rights: Optional[str]) -> None:
+        """Change the rights of a user's EXISTING friend: the
+        @SET-FRIEND-ACCESS equivalent. ``rights`` is one SINTRAN access field
+        (N, or letters RWACD); None or "" means no change and writes nothing.
+        The friend stays on the list even with "N". Raises KeyError (owner
+        unknown, or the friend is not on the list - use add_friend for a new
+        one) or ValueError (bad letters). Persists the owner's user page."""
+        self._ensure_writable()
+        owner = self._resolve_user_ref(user_ref)
+        if owner is None:
+            raise KeyError(f"No such user: {user_ref}")
+        friend_index = self._resolve_friend_index(friend_ref)
+        f = owner.get_friend(friend_index)
+        if f is None:
+            raise KeyError(f"Not a friend: {friend_ref}")
+        if not rights:
+            return
+        perm_bits = parse_access_rights(rights)
+        # Same slot: the index and in-use bit stay, only rights bits 8-12 change.
+        f.set_friend(friend_index, perm_bits)
+        self._write_user_page(owner.user_index)
+
+    def set_file_access(self, path: str, access_bits: int) -> None:
+        """Set the 15-bit access word of an existing file and persist it
+        (only the file's object entry page is written). The
+        @SET-FILE-ACCESS equivalent; use apply_access_triple() to build the
+        word from SINTRAN's PUBLIC,FRIEND,OWN form. Raises KeyError if the
+        file does not exist."""
+        self._ensure_writable()
+        obj = self._find_object(path)
+        if obj is None:
+            raise KeyError(f"No such file: {path}")
+        obj.access_bits = access_bits & 0x7FFF
+        self._write_object_page(obj.object_index)
+
+    def set_default_file_access(self, user_ref: Union[int, str],
+                                access_bits: int) -> None:
+        """Set a user's DEFAULT file access: the access word a file gets when
+        the user creates it (user entry offset 40). The
+        @SET-DEFAULT-FILE-ACCESS equivalent. Existing files keep their own.
+        Raises KeyError if there is no such user. Persists the user page."""
+        self._ensure_writable()
+        user = self._resolve_user_ref(user_ref)
+        if user is None:
+            raise KeyError(f"No such user: {user_ref}")
+        user.default_file_access = access_bits & 0x7FFF
+        self._write_user_page(user.user_index)
+
+    def get_default_file_access(self, user_ref: Union[int, str]) -> int:
+        """A user's default file access word. KeyError if no such user."""
+        user = self._resolve_user_ref(user_ref)
+        if user is None:
+            raise KeyError(f"No such user: {user_ref}")
+        return user.default_file_access
 
     # -- Bitmap queries ----------------------------------------------------
 
@@ -1864,7 +1922,10 @@ class NdfsFileSystem:
         # The logical extent is not lost - it is ceil(bytes_in_file / NDFS_PAGE_SIZE), and
         # get_file_blocks uses exactly that to walk the index.
         entry.pages_in_file = self._count_real_data_pages_in_buffer(file_data, holes)
-        entry.bytes_in_file = len(file_data) if len(file_data) > 0 else 1
+        # An empty file is 0 bytes, as SINTRAN records one it creates (measured 2026-11-04:
+        # @CREATE-FILE ACCTEST:SYMB,0 on nd100x stores 0xFFFFFFFF, i.e. 0 bytes). This used to
+        # store 1 for an empty file, so it came back out as 1 byte.
+        entry.bytes_in_file = len(file_data)
         entry.file_pointer = BlockPointer(top_block_id, top_pointer_type)
         # A new file inherits the OWNING USER's default file access, which is
         # what SINTRAN does (@SET-DEFAULT-FILE-ACCESS sets the value copied onto
@@ -2007,7 +2068,12 @@ class NdfsFileSystem:
         # Points straight at the first data page. There is no index block to walk: page N
         # of the file is simply block (file_pointer.block_id + N).
         entry.file_pointer = BlockPointer(start_block, PointerType.Contiguous)
-        entry.access_bits = ACCESS_DEFAULT
+        # The owner's default file access, as for an indexed file: SINTRAN gives a new
+        # contiguous file the same (measured 2026-11-04 on nd100x: with SYSTEM's default set
+        # to N,RW,RWACD, @CREATE-FILE ACCCON:DATA,4 stored 0x007F). This used to be a flat
+        # ACCESS_DEFAULT (0x03FF). Same fallback as the indexed create site.
+        entry.access_bits = ((user.default_file_access & 0x7FFF)
+                             if user.default_file_access else ACCESS_DEFAULT)
 
         # Contiguous, not indexed -- this is the flag SINTRAN prints as "CONTINUOUS FILE".
         entry.file_type_flags = FT_CONTIGUOUS
@@ -2119,7 +2185,7 @@ class NdfsFileSystem:
         # Update existing entry
         # Allocated count, not the logical extent - see the note at the create site.
         existing.pages_in_file = self._count_real_data_pages_in_buffer(file_data, holes)
-        existing.bytes_in_file = len(file_data) if len(file_data) > 0 else 1
+        existing.bytes_in_file = len(file_data)   # 0 stays 0 - see the create site
         existing.file_pointer = BlockPointer(top_block_id, top_pointer_type)
 
         # Update user pages used: only the REAL (non-sparse) data pages of the

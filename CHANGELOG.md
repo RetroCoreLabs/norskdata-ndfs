@@ -2,6 +2,62 @@
 
 All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndtool`).
 
+## Unreleased - 2026-11-04
+
+### Added - the SINTRAN access commands (all three ports and ndtool)
+
+* `@SET-FRIEND-ACCESS`: change the rights of a friend already on the list, in place (same slot,
+  same index). C `ndfs_set_friend_access`, Python `set_friend_access`, TypeScript
+  `setFriendAccess`; ndtool `--set-friend-access OWNER:FRIEND:RIGHTS` and shell
+  `set-friend-access`. Before this it took a delete and an add.
+* `@SET-DEFAULT-FILE-ACCESS`: set the access a user's new files get (user entry offset 40).
+  C `ndfs_set_default_file_access` / `ndfs_get_default_file_access`, Python and TypeScript the
+  same names; ndtool `--set-default-file-access USER[:PUBLIC,FRIEND,OWN]` and shell
+  `set-default-file-access` (USER alone shows it).
+* SINTRAN's own access form, `PUBLIC,FRIEND,OWN` with each field `N` or letters `RWACD` and an
+  empty field meaning no change (ND-60.128.5): C `ndfs_parse_access_rights` /
+  `ndfs_apply_access_triple`, Python `parse_access_rights` / `apply_access_triple`, TypeScript
+  `parseAccessRights` / `applyAccessTriple`. ndtool `--set-file-access PUBLIC,FRIEND,OWN PATH` and
+  shell `set-file-access` use it; `--chmod` stays.
+* Python and TypeScript: `set_file_access` / `setFileAccess` on an existing file (C had it).
+* ndtool `-h` and the shell help name the SINTRAN command beside each access and friend command,
+  so a search for the SINTRAN name finds it.
+
+### Fixed - rewriting an object page turned empty files into 1-byte files (all three ports)
+
+* SINTRAN stores "bytes in file" as bytes minus one, so an empty file holds 0xFFFFFFFF
+  (measured on nd100x `SMD0.IMG`: ten SINTRAN-made entries, among them `(SYSTEM)SINTRAN:DATA`
+  and `(SYSTEM)TERMINAL`). The readers already turned 0xFFFFFFFF into 0 (since 41e6a6f), but the
+  writers stored 0 bytes as 0, which reads back as 1 byte. Any change that rewrites an object page
+  - `--chmod`, `--set-file-access`, put, rm, rename - rewrote every empty file on that page that
+  way. Found while checking `--set-file-access` against SINTRAN: one access change on
+  `(SYSTEM)MAILBOX:DATA` changed 40 more bytes in ten other entries on the same page.
+* The C, Python and TypeScript writers now store `(bytes - 1)` wrapped to 32 bits. A pack
+  rewritten by an older version may hold 1-byte files that were empty; nothing here repairs them.
+  Tests: `test_empty_file_stored_as_all_ones` (C, Python), "stores an empty file as 0xFFFFFFFF"
+  (TypeScript). RetroIO.Storage.Ndfs had the same writer and is fixed the same way.
+* Writing an empty file recorded it as 1 byte (`file_size > 0 ? file_size : 1`, there since the
+  first version), so it came back out as 1 byte. It is 0 bytes now, as SINTRAN records one it
+  creates (`@CREATE-FILE ACCTEST:SYMB,0` stored 0xFFFFFFFF).
+
+### Fixed - a new contiguous file ignored the owner's default access (all three ports)
+
+* SINTRAN gives a new file its owner's default access, indexed and contiguous alike (measured on
+  nd100x: with SYSTEM's default set to `N,RW,RWACD`, `@CREATE-FILE ACCTEST:SYMB,0` and
+  `@CREATE-FILE ACCCON:DATA,4` both stored 0x007F). Indexed files already did; a contiguous file
+  got a fixed 0x03FF. Test: `test_new_files_get_owner_default_access` (C, Python) and the matching
+  TypeScript case in `contiguous-files.test.ts`.
+
+### Fixed - the ndtool shell wrote the image before `save`
+
+* The README says the shell changes only its in-memory copy until `save`, and quitting without
+  saving throws the changes away. Measured: shell `chmod`, then `quit` answered "no", changed the
+  file. Every shell command that runs a `cmd_*` ending in `ndtool_save_image` wrote at once:
+  `chmod`, `put`, `useradd`, `userdel`, `quotaadd`, `quotadel`, `passwd`, `release`, `setcpu`,
+  `import-segment` (`rm`, `mv`, `friendadd` and `frienddel` were already right). Inside the shell that call now only
+  marks the copy as changed; `save` (or yes at `quit`) writes it. The read/write helpers moved to
+  `tools/ndtool/image_file.c`, and `tests/test_ndtool_image_file.c` holds the rule.
+
 ## 0.0.9 - 2026-10-31
 
 ### Fixed - hardening after a build-warning and memory/security review (ndfs-c, ndtool; size check also in ndfs-py and ndfs-ts)
