@@ -77,6 +77,36 @@ static int test_bytes_in_file_encoding(void)
     return 0;
 }
 
+/* An empty file is stored as 0xFFFFFFFF (0 - 1), as SINTRAN stores it: nd100x SMD0.IMG holds
+ * it in ten SINTRAN-made entries such as (SYSTEM)SINTRAN:DATA and (SYSTEM)TERMINAL. Before
+ * 2026-11-04 the writer stored 0, which reads back as 1 byte. */
+static int test_empty_file_stored_as_all_ones(void)
+{
+    ndfs_object_entry_t oe, oe2;
+    uint8_t buf[NDFS_ENTRY_SIZE];
+
+    ndfs_oe_init(&oe);
+    strcpy(oe.object_name, "EMPTY");
+    oe.bytes_in_file = 0;
+    oe.file_pointer.block_id = 10;
+    oe.file_pointer.type = NDFS_PTR_INDEXED;
+
+    ndfs_oe_to_bytes(&oe, buf, NDFS_ENTRY_SIZE, 0);
+    TEST_ASSERT_EQUAL(0xFF, buf[56]);
+    TEST_ASSERT_EQUAL(0xFF, buf[57]);
+    TEST_ASSERT_EQUAL(0xFF, buf[58]);
+    TEST_ASSERT_EQUAL(0xFF, buf[59]);
+
+    ndfs_oe_from_bytes(buf, NDFS_ENTRY_SIZE, 0, &oe2);
+    TEST_ASSERT_EQUAL(0, oe2.bytes_in_file);
+
+    /* And reading SINTRAN's own bytes then writing them back changes nothing. */
+    ndfs_oe_to_bytes(&oe2, buf, NDFS_ENTRY_SIZE, 0);
+    TEST_ASSERT_EQUAL(0xFF, buf[56]);
+    TEST_ASSERT_EQUAL(0xFF, buf[59]);
+    return 0;
+}
+
 static int test_not_in_use(void)
 {
     ndfs_object_entry_t oe;
@@ -203,6 +233,7 @@ void run_object_entry_tests(void)
     RUN_TEST(test_init);
     RUN_TEST(test_roundtrip);
     RUN_TEST(test_bytes_in_file_encoding);
+    RUN_TEST(test_empty_file_stored_as_all_ones);
     RUN_TEST(test_not_in_use);
     RUN_TEST(test_full_name);
     RUN_TEST(test_name_uppercase);

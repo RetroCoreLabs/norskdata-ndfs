@@ -180,8 +180,12 @@ ndfs_error_t ndfs_oe_to_bytes(const ndfs_object_entry_t *entry,
     /* Pages in file */
     ndfs_write_u32be(buffer, offset + 52, entry->pages_in_file);
 
-    /* Bytes in file - 1 */
-    bytes_minus_one = entry->bytes_in_file > 0 ? entry->bytes_in_file - 1 : 0;
+    /* Bytes in file - 1, wrapped to 32 bits: an empty file is stored as 0xFFFFFFFF, as
+       SINTRAN stores it (measured on nd100x SMD0.IMG: ten SINTRAN-made entries, e.g.
+       (SYSTEM)SINTRAN:DATA and (SYSTEM)TERMINAL, hold 0xFFFFFFFF). Up to 2026-11-04 this
+       wrote 0, which reads back as 1 byte, so rewriting an object page turned every empty
+       file on it into a 1-byte file. */
+    bytes_minus_one = (uint32_t)(entry->bytes_in_file - 1u);
     ndfs_write_u32be(buffer, offset + 56, bytes_minus_one);
 
     /* File pointer */

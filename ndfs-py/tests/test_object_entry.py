@@ -39,7 +39,7 @@ def build_object_bytes(
 
     buf[34] = user_index
     write_uint32_be(buf, 52, pages)
-    write_uint32_be(buf, 56, byte_count - 1 if byte_count > 0 else 0)  # stored as bytes-1
+    write_uint32_be(buf, 56, (byte_count - 1) & 0xFFFFFFFF)  # stored as bytes-1; empty = 0xFFFFFFFF
     write_uint32_be(buf, 60, pointer_native)
 
     return buf
@@ -68,6 +68,18 @@ class TestObjectEntryFromBytes:
         data = build_object_bytes("TINY", "DATA", 0, 1, 1, 0x00000010)
         entry = ObjectEntry.from_bytes(data, 0)
         assert entry.bytes_in_file == 1
+
+    def test_empty_file_stored_as_all_ones(self):
+        # SINTRAN stores an empty file as 0xFFFFFFFF (0 - 1): nd100x SMD0.IMG holds it in ten
+        # SINTRAN-made entries such as (SYSTEM)SINTRAN:DATA. Before 2026-11-04 the writer
+        # stored 0, which reads back as 1 byte.
+        data = build_object_bytes("EMPTY", "DATA", 0, 0, 0, 0x00000010)
+        assert bytes(data[56:60]) == b"\xff\xff\xff\xff"
+        entry = ObjectEntry.from_bytes(data, 0)
+        assert entry.bytes_in_file == 0
+        out = bytearray(ENTRY_SIZE)
+        entry.to_bytes(out, 0)
+        assert bytes(out[56:60]) == b"\xff\xff\xff\xff"
 
 
 class TestObjectEntryFullName:

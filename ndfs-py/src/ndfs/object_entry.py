@@ -326,8 +326,12 @@ class ObjectEntry:
         # Pages in file
         write_uint32_be(buffer, offset + 52, self.pages_in_file)
 
-        # Bytes in file - 1
-        bytes_minus_one = self.bytes_in_file - 1 if self.bytes_in_file > 0 else 0
+        # Bytes in file - 1, wrapped to 32 bits: an empty file is stored as 0xFFFFFFFF, as
+        # SINTRAN stores it (measured on nd100x SMD0.IMG: ten SINTRAN-made entries, e.g.
+        # (SYSTEM)SINTRAN:DATA and (SYSTEM)TERMINAL, hold 0xFFFFFFFF). Up to 2026-11-04 this
+        # wrote 0, which reads back as 1 byte, so rewriting an object page turned every empty
+        # file on it into a 1-byte file.
+        bytes_minus_one = (self.bytes_in_file - 1) & 0xFFFFFFFF
         write_uint32_be(buffer, offset + 56, bytes_minus_one)
 
         # File pointer

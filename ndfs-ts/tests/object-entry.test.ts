@@ -30,7 +30,7 @@ function buildObjectBytes(
 
   buf[34] = userIndex;
   writeUint32BE(buf, 52, pages);
-  writeUint32BE(buf, 56, bytes > 0 ? bytes - 1 : 0); // stored as bytes-1
+  writeUint32BE(buf, 56, (bytes - 1) >>> 0); // stored as bytes-1; empty = 0xFFFFFFFF
   writeUint32BE(buf, 60, pointerNative);
 
   return buf;
@@ -62,6 +62,19 @@ describe('ObjectEntry', () => {
       const data = buildObjectBytes('TINY', 'DATA', 0, 1, 1, 0x00000010);
       const entry = ObjectEntry.fromBytes(data, 0);
       expect(entry!.bytesInFile).toBe(1);
+    });
+
+    // SINTRAN stores an empty file as 0xFFFFFFFF (0 - 1): nd100x SMD0.IMG holds it in ten
+    // SINTRAN-made entries such as (SYSTEM)SINTRAN:DATA. Before 2026-11-04 the writer stored 0,
+    // which reads back as 1 byte.
+    it('stores an empty file as 0xFFFFFFFF and reads it back as 0 bytes', () => {
+      const data = buildObjectBytes('EMPTY', 'DATA', 0, 0, 0, 0x00000010);
+      expect(Array.from(data.slice(56, 60))).toEqual([0xff, 0xff, 0xff, 0xff]);
+      const entry = ObjectEntry.fromBytes(data, 0);
+      expect(entry!.bytesInFile).toBe(0);
+      const out = new Uint8Array(ENTRY_SIZE);
+      entry!.toBytes(out, 0);
+      expect(Array.from(out.slice(56, 60))).toEqual([0xff, 0xff, 0xff, 0xff]);
     });
   });
 
