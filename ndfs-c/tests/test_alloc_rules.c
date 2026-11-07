@@ -331,6 +331,42 @@ static int test_empty_file_owns_no_page(void)
     return 0;
 }
 
+/* New files carry a real date, as SINTRAN gives them (measured 2026-11-07): a written file gets
+ * the creation date and the last-write date, @CREATE-FILE's contiguous file only the creation
+ * date. Today's year does not fit the 6-bit field, so it is moved back 30 years (Ronny's rule);
+ * before this the dates stayed 0 and SINTRAN showed "CREATED 00.00.00 ?0, 1950". */
+static int test_new_files_get_a_date(void)
+{
+    ndfs_filesystem_t *fs = new_smd75();
+    ndfs_object_entry_t e;
+    ndfs_calendar_t cal;
+    static const uint8_t text[3] = { 'X', '\r', '\n' };
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/DATED:SYMB", text, sizeof(text)));
+    TEST_ASSERT_OK(ndfs_create_contiguous_file(fs, "SYSTEM/DATEC:DATA", 2));
+
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "DATED:SYMB", "SYSTEM", &e));
+    TEST_ASSERT(ndfs_nd_time_to_calendar(e.date_created, &cal));
+    TEST_ASSERT(cal.year >= 1950 && cal.year <= 2013);
+    TEST_ASSERT_EQUAL(e.date_created, e.last_write_date);
+
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "DATEC:DATA", "SYSTEM", &e));
+    TEST_ASSERT(ndfs_nd_time_to_calendar(e.date_created, &cal));
+    TEST_ASSERT_EQUAL(0, e.last_write_date);
+
+    /* Writing into it sets the last-write date and keeps the creation date. */
+    {
+        uint32_t created = e.date_created;
+        TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/DATEC:DATA", text, sizeof(text)));
+        TEST_ASSERT_OK(ndfs_get_object_entry(fs, "DATEC:DATA", "SYSTEM", &e));
+        TEST_ASSERT_EQUAL(created, e.date_created);
+        TEST_ASSERT(ndfs_nd_time_to_calendar(e.last_write_date, &cal));
+    }
+    ndfs_close(fs);
+    return 0;
+}
+
 /* A contiguous file of one page uses the data page rule: 32768 on a cold SMD 75 MB. */
 static int test_single_page_file_uses_block_rule(void)
 {
@@ -443,6 +479,7 @@ void run_alloc_rules_tests(void)
     RUN_TEST(test_single_page_file_uses_block_rule);
     RUN_TEST(test_new_files_get_owner_default_access);
     RUN_TEST(test_empty_file_owns_no_page);
+    RUN_TEST(test_new_files_get_a_date);
     RUN_TEST(test_indexed_file_placement);
     RUN_TEST(test_quota_charges_index_and_object_pages);
     RUN_TEST(test_quota_large_file_sub_index);

@@ -9,6 +9,7 @@
 #include "ndfs/nd_time.h"
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define ND_EPOCH   1950u
 #define ND_MAX_YEAR 2013u
@@ -82,4 +83,49 @@ bool ndfs_nd_time_format(uint32_t raw, char *out, size_t len)
                  cal.year, cal.month, cal.day, cal.hour, cal.minute, cal.second);
     }
     return true;
+}
+
+/* True for a Gregorian leap year. */
+static bool is_leap_year(unsigned year)
+{
+    return (year % 4u == 0u && year % 100u != 0u) || year % 400u == 0u;
+}
+
+void ndfs_calendar_fit_nd_range(ndfs_calendar_t *cal)
+{
+    if (cal == NULL)
+        return;
+
+    /* Rule chosen by Ronny Hansen, 2026-11-07: too old -> the same day in 1950; too new -> back
+     * 30 years at a time, keeping day, month and time, until the 6-bit year field holds it. */
+    if (cal->year < ND_EPOCH)
+        cal->year = ND_EPOCH;
+    while (cal->year > ND_MAX_YEAR)
+        cal->year -= 30u;
+
+    if (cal->month == 2u && cal->day == 29u && !is_leap_year(cal->year))
+        cal->day = 28u;
+}
+
+uint32_t ndfs_nd_time_now(void)
+{
+    time_t now = time(NULL);
+    struct tm *local;
+    ndfs_calendar_t cal;
+
+    if (now == (time_t)-1)
+        return 0;
+    local = localtime(&now);
+    if (local == NULL)
+        return 0;
+
+    cal.year = (unsigned)(local->tm_year + 1900);
+    cal.month = (unsigned)(local->tm_mon + 1);
+    cal.day = (unsigned)local->tm_mday;
+    cal.hour = (unsigned)local->tm_hour;
+    cal.minute = (unsigned)local->tm_min;
+    /* tm_sec can be 60 on a leap second; the ND field stops at 59. */
+    cal.second = local->tm_sec > 59 ? 59u : (unsigned)local->tm_sec;
+    ndfs_calendar_fit_nd_range(&cal);
+    return ndfs_calendar_to_nd_time(&cal);
 }

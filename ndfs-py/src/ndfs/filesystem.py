@@ -41,6 +41,7 @@ from ndfs.object_file import ObjectFile
 from ndfs.user_entry import UserEntry
 from ndfs.user_friend import UserFriend
 from ndfs.access_permissions import parse_access_rights
+from ndfs.nd_time import nd_time_now
 from ndfs.object_entry import (
     ObjectEntry,
     ACCESS_DEFAULT,
@@ -1940,6 +1941,12 @@ class NdfsFileSystem:
         # store 1 for an empty file, so it came back out as 1 byte.
         entry.bytes_in_file = len(file_data)
         entry.file_pointer = BlockPointer(top_block_id, top_pointer_type)
+        # Created and written now, as SINTRAN stamps a file @COPY-FILE makes (measured
+        # 2026-11-07: offsets 40 and 48 both set). Today's date does not fit the 6-bit year, so
+        # nd_time_now() moves it back 30 years (Ronny's rule, see nd_time.fit_nd_range). Before
+        # this both stayed 0 and SINTRAN printed "CREATED 00.00.00 ?0, 1950".
+        entry.date_created = nd_time_now()
+        entry.last_date_written = entry.date_created
         # A new file inherits the OWNING USER's default file access, which is
         # what SINTRAN does (@SET-DEFAULT-FILE-ACCESS sets the value copied onto
         # every file the user then creates). It used to be a flat ACCESS_DEFAULT
@@ -2081,6 +2088,9 @@ class NdfsFileSystem:
         # Points straight at the first data page. There is no index block to walk: page N
         # of the file is simply block (file_pointer.block_id + N).
         entry.file_pointer = BlockPointer(start_block, PointerType.Contiguous)
+        # Created now. @CREATE-FILE sets only the creation date (measured 2026-11-07: offset 40
+        # set, offset 48 - last write - 0). See nd_time.fit_nd_range for the 30-year rule.
+        entry.date_created = nd_time_now()
         # The owner's default file access, as for an indexed file: SINTRAN gives a new
         # contiguous file the same (measured 2026-11-04 on nd100x: with SYSTEM's default set
         # to N,RW,RWACD, @CREATE-FILE ACCCON:DATA,4 stored 0x007F). This used to be a flat
@@ -2144,6 +2154,8 @@ class NdfsFileSystem:
             self._write_page(start_block + i, chunk)
 
         existing.bytes_in_file = len(data)
+        # Written now; the creation date stays (see nd_time.fit_nd_range for the 30-year rule).
+        existing.last_date_written = nd_time_now()
 
         # pages_in_file stays at the reservation. For a contiguous file the pages are
         # allocated whether or not the data reaches them, so counting only the written
@@ -2199,6 +2211,8 @@ class NdfsFileSystem:
         existing.pages_in_file = self._count_real_data_pages_in_buffer(file_data, holes)
         existing.bytes_in_file = len(file_data)   # 0 stays 0 - see the create site
         existing.file_pointer = BlockPointer(top_block_id, top_pointer_type)
+        # Written now; the creation date stays (see nd_time.fit_nd_range for the 30-year rule).
+        existing.last_date_written = nd_time_now()
 
         # Update user pages used: only the REAL (non-sparse) data pages of the
         # new content -- never the index/sub-index structural pages. See

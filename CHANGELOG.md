@@ -4,6 +4,22 @@ All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndto
 
 ## Unreleased - 2026-11-07
 
+### Fixed - new files get a date (all three ports and ndtool)
+
+* A file put on by the libraries had creation date 0, so SINTRAN printed
+  `CREATED 00.00.00 ?0, 1950`. The ND date holds the years 1950-2013 only, so today's date
+  cannot be stored. Rule chosen by Ronny Hansen: a date before 1950 becomes the same day in
+  1950; a date after 2013 keeps its day, month and time and moves back 30 years, again until it
+  fits (2026-11-07 becomes 1996-11-07). 29 February becomes 28 February in a year without one.
+  C `ndfs_calendar_fit_nd_range` / `ndfs_nd_time_now`, Python `fit_nd_range` / `nd_time_now`,
+  TypeScript `fitNdRange` / `ndTimeNow`.
+* Which dates, as SINTRAN sets them (measured on nd100x): a written file gets the creation date
+  and the last-write date; a contiguous file from `create_contiguous_file` only the creation date,
+  as `@CREATE-FILE` does; writing into an existing file sets its last-write date and keeps the
+  creation date. A date carried in an XAT sidecar is still applied after the write and wins.
+* Checked on the machine: a file put on with `ndtool --put` at 18:12:50 on 2026-11-07 shows
+  `CREATED 18.12.50  NOVEMBER 7, 1996` and the same `OPENED FOR WRITE` in `@FILE-STATISTICS`.
+
 ### Fixed - an empty file owns no page, as SINTRAN writes one (all three ports and ndtool)
 
 * An empty file written by the libraries used to get one data page and one index block. SINTRAN

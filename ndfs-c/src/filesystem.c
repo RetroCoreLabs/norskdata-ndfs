@@ -8,6 +8,7 @@
 
 #include <ndfs/filesystem.h>
 #include <ndfs/parity.h>
+#include <ndfs/nd_time.h>
 #include "endian_util.h"
 #include "ndfs_name.h"
 #include <string.h>
@@ -1771,6 +1772,12 @@ static ndfs_error_t create_new_file(struct ndfs_filesystem *fs,
     entry.bytes_in_file = (uint32_t)file_size;
     entry.file_pointer.block_id = top_block_id;
     entry.file_pointer.type = pointer_type;
+    /* Created and written now, as SINTRAN stamps a file @COPY-FILE makes (measured 2026-11-07:
+     * offsets 40 and 48 both set). Today's date does not fit the 6-bit year, so
+     * ndfs_nd_time_now() moves it back 30 years (Ronny's rule, see nd_time.h). Before this both
+     * stayed 0 and SINTRAN printed "CREATED 00.00.00 ?0, 1950". */
+    entry.date_created = ndfs_nd_time_now();
+    entry.last_write_date = entry.date_created;
     /* A new file inherits the OWNING USER's default file access, which is what
      * SINTRAN does (@SET-DEFAULT-FILE-ACCESS sets the value copied onto every
      * file the user then creates). It used to be a flat NDFS_ACCESS_DEFAULT
@@ -1873,6 +1880,8 @@ static ndfs_error_t update_existing_contiguous_file(struct ndfs_filesystem *fs,
     }
 
     existing->bytes_in_file = (uint32_t)file_size;
+    /* Written now; the creation date stays (see ndfs_nd_time_now for the 30-year rule). */
+    existing->last_write_date = ndfs_nd_time_now();
 
     /* pages_in_file stays at the reservation. For a contiguous file the pages
      * are allocated whether or not the data reaches them, so counting only the
@@ -1944,6 +1953,8 @@ static ndfs_error_t update_existing_file(struct ndfs_filesystem *fs,
     existing->bytes_in_file = (uint32_t)file_size;   /* 0 stays 0 - see the create site */
     existing->file_pointer.block_id = top_block_id;
     existing->file_pointer.type = pointer_type;
+    /* Written now; the creation date stays (see ndfs_nd_time_now for the 30-year rule). */
+    existing->last_write_date = ndfs_nd_time_now();
     /* No separate SubIndexed file-type-flag bit exists (mirrors the TS port,
      * which also uses FT_INDEXED for any non-contiguous layout); access bits,
      * dates and versioning are intentionally preserved. */
@@ -2734,6 +2745,12 @@ static void register_contiguous_run(struct ndfs_filesystem *fs, ndfs_user_entry_
     /* Unlike an indexed file, allocated and logical extent are the same here,
      * and both equal the reservation -- a contiguous run has no holes. */
     entry.pages_in_file = pages;
+
+    /* Created now. @CREATE-FILE sets only the creation date (measured 2026-11-07: E0:SYMB had
+     * offset 40 set and offset 48, last write, 0). Today's date does not fit the 6-bit year, so
+     * ndfs_nd_time_now() moves it back 30 years (Ronny's rule, see nd_time.h). Before this the
+     * date stayed 0 and SINTRAN printed "CREATED 00.00.00 ?0, 1950". */
+    entry.date_created = ndfs_nd_time_now();
 
     /* Created empty: the pages exist, but no byte of them is file content yet.
      * This is what the live machine reports for a fresh contiguous file. */

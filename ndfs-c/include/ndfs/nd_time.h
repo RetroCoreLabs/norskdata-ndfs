@@ -57,6 +57,27 @@ bool ndfs_nd_time_to_calendar(uint32_t raw, ndfs_calendar_t *out);
 uint32_t ndfs_calendar_to_nd_time(const ndfs_calendar_t *cal);
 
 /**
+ * Move a calendar date into the years an ND timestamp can hold (1950-2013).
+ *
+ * The year field has 6 bits, so today's date does not fit. Rule chosen by
+ * Ronny Hansen on 2026-11-07: a date before 1950 becomes the same day in 1950;
+ * a date after 2013 keeps its day, month and time and moves back 30 years,
+ * again until it fits (2026-11-07 becomes 1996-11-07, 2050 becomes 1990).
+ * 29 February becomes 28 February when the new year has no 29 February.
+ * A date already in range is left alone.
+ * @param cal  The date to adjust in place. Ignored if NULL.
+ */
+void ndfs_calendar_fit_nd_range(ndfs_calendar_t *cal);
+
+/**
+ * The host's local time now, moved into range with
+ * ndfs_calendar_fit_nd_range() and packed. This is what the writers stamp on
+ * a file they create or write.
+ * @return the packed value; 0 only if the host clock cannot be read.
+ */
+uint32_t ndfs_nd_time_now(void);
+
+/**
  * Format a raw packed ND-100 timestamp as "YYYY-MM-DD HH:MM:SS".
  * @param raw  The packed 32-bit value.
  * @param out  Destination buffer.

@@ -15,6 +15,7 @@ from ndfs.bit_file import BitFile
 from ndfs.constants import NDFS_PAGE_SIZE
 from ndfs.filesystem import NdfsFileSystem
 from ndfs.object_entry import FT_INDEXED
+from ndfs.nd_time import nd_time_to_date
 from ndfs.image_creator import create_image, options_for_disk_type
 from ndfs.types import ImageTemplate, ImageCreationOptions, BootChoice
 from ndfs.disk_types import DiskFamily, DISK_TYPES, disk_type_count, find_disk_type, get_disk_type
@@ -205,6 +206,30 @@ class TestFileSystemPlacement:
         ndfs.write_file("SYSTEM/E0:SYMB", b"\x33" * 10)
         assert ndfs.read_file("SYSTEM/E0:SYMB") == b"\x33" * 10
         assert ndfs.verify_integrity()
+
+    def test_new_files_get_a_date(self):
+        # New files carry a real date, as SINTRAN gives them (measured 2026-11-07): a written
+        # file gets the creation date and the last-write date, @CREATE-FILE's contiguous file
+        # only the creation date. Today's year does not fit the 6-bit field, so it is moved back
+        # 30 years (Ronny's rule); before this the dates stayed 0 ("?0, 1950" in SINTRAN).
+        ndfs = new_smd75()
+        ndfs.write_file("SYSTEM/DATED:SYMB", b"X\r\n")
+        ndfs.create_contiguous_file("SYSTEM/DATEC:DATA", 2)
+
+        e = entry_of(ndfs, "DATED:SYMB")
+        assert 1950 <= nd_time_to_date(e.date_created).year <= 2013
+        assert e.last_date_written == e.date_created
+
+        e = entry_of(ndfs, "DATEC:DATA")
+        assert nd_time_to_date(e.date_created) is not None
+        assert e.last_date_written == 0
+        created = e.date_created
+
+        # Writing into it sets the last-write date and keeps the creation date.
+        ndfs.write_file("SYSTEM/DATEC:DATA", b"X\r\n")
+        e = entry_of(ndfs, "DATEC:DATA")
+        assert e.date_created == created
+        assert nd_time_to_date(e.last_date_written) is not None
 
     def test_single_page_file_uses_block_rule(self):
         ndfs = new_smd75()

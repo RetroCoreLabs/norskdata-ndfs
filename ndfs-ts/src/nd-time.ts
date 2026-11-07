@@ -16,6 +16,48 @@
 /** ND epoch year. */
 const ND_EPOCH = 1950;
 
+/** Last year the 6-bit year field holds. */
+const ND_MAX_YEAR = 2013;
+
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+/**
+ * Move a date into the years an ND timestamp can hold (1950-2013).
+ *
+ * The year field has 6 bits, so today's date does not fit. Rule chosen by
+ * Ronny Hansen on 2026-11-07: a date before 1950 becomes the same day in 1950;
+ * a date after 2013 keeps its day, month and time and moves back 30 years,
+ * again until it fits (2026-11-07 becomes 1996-11-07, 2050 becomes 1990).
+ * 29 February becomes 28 February when the new year has no 29 February.
+ * A date already in range comes back unchanged. Local time, as dateToNdTime
+ * reads it. Returns a new Date; the argument is not changed.
+ */
+export function fitNdRange(date: Date): Date {
+  let year = date.getFullYear();
+  if (year < ND_EPOCH) year = ND_EPOCH;
+  while (year > ND_MAX_YEAR) year -= 30;
+  let day = date.getDate();
+  if (date.getMonth() === 1 && day === 29 && !isLeapYear(year)) day = 28;
+  return new Date(
+    year,
+    date.getMonth(),
+    day,
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+  );
+}
+
+/**
+ * The host's local time now, moved into range with fitNdRange and packed.
+ * This is what the writers stamp on a file they create or write.
+ */
+export function ndTimeNow(): number {
+  return dateToNdTime(fitNdRange(new Date()));
+}
+
 /**
  * Unpack a 32-bit ND timestamp to a Date, or null if the value is 0.
  */

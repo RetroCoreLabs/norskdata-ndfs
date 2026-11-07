@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ndTimeToDate, dateToNdTime } from '../src/nd-time.js';
+import { ndTimeToDate, dateToNdTime, fitNdRange, ndTimeNow } from '../src/nd-time.js';
 
 describe('ND timestamp', () => {
   describe('ndTimeToDate', () => {
@@ -77,5 +77,44 @@ describe('ND timestamp', () => {
       expect(unpacked!.getMinutes()).toBe(59);
       expect(unpacked!.getSeconds()).toBe(59);
     });
+  });
+});
+
+// Ronny's rule (2026-11-07): before 1950 -> 1950; after 2013 -> back 30 years until it fits.
+// Month and time never change; 29 February becomes 28 February in a year without one.
+describe('fitNdRange', () => {
+  const cases: Array<[number, number, number, number, number]> = [
+    // given year, month, day -> wanted year, day
+    [2026, 11, 7, 1996, 7], // today
+    [2014, 1, 1, 1984, 1], // first year that does not fit
+    [2043, 12, 31, 2013, 31], // still one step
+    [2044, 1, 1, 1984, 1], // two steps
+    [2013, 12, 31, 2013, 31], // in range: unchanged
+    [1950, 1, 1, 1950, 1],
+    [1949, 6, 15, 1950, 15], // too old
+    [1800, 3, 2, 1950, 2],
+    [2028, 2, 29, 1998, 28], // 1998 has no 29 February
+    [2044, 2, 29, 1984, 29], // 1984 has one
+    [1948, 2, 29, 1950, 28],
+  ];
+  for (let i = 0; i < cases.length; i++) {
+    const [y, m, d, wantY, wantD] = cases[i];
+    it(`moves ${y}-${m}-${d} to ${wantY}-${m}-${wantD}`, () => {
+      const got = fitNdRange(new Date(y, m - 1, d, 13, 45, 30));
+      expect(got.getFullYear()).toBe(wantY);
+      expect(got.getMonth()).toBe(m - 1);
+      expect(got.getDate()).toBe(wantD);
+      expect(got.getHours()).toBe(13);
+      expect(got.getMinutes()).toBe(45);
+      expect(got.getSeconds()).toBe(30);
+    });
+  }
+
+  it('gives a nonzero, in-range date for now', () => {
+    const raw = ndTimeNow();
+    expect(raw).not.toBe(0);
+    const year = ndTimeToDate(raw)!.getFullYear();
+    expect(year).toBeGreaterThanOrEqual(1950);
+    expect(year).toBeLessThanOrEqual(2013);
   });
 });

@@ -135,6 +135,53 @@ static int test_format_not_set(void)
     return 0;
 }
 
+/* Fit one date and check the year and day it lands on; month and time never change. */
+static int fit_case(unsigned year, unsigned month, unsigned day,
+                    unsigned want_year, unsigned want_day)
+{
+    ndfs_calendar_t cal = { 0 };
+    cal.year = year; cal.month = month; cal.day = day;
+    cal.hour = 13; cal.minute = 45; cal.second = 30;
+    ndfs_calendar_fit_nd_range(&cal);
+    TEST_ASSERT_EQUAL(want_year, cal.year);
+    TEST_ASSERT_EQUAL(month, cal.month);
+    TEST_ASSERT_EQUAL(want_day, cal.day);
+    TEST_ASSERT_EQUAL(13, cal.hour);
+    TEST_ASSERT_EQUAL(45, cal.minute);
+    TEST_ASSERT_EQUAL(30, cal.second);
+    return 0;
+}
+
+/* Ronny's rule (2026-11-07): before 1950 -> 1950; after 2013 -> back 30 years until it fits. */
+static int test_fit_nd_range(void)
+{
+    TEST_ASSERT_EQUAL(0, fit_case(2026, 11, 7, 1996, 7));   /* today -> 1996-11-07 */
+    TEST_ASSERT_EQUAL(0, fit_case(2014, 1, 1, 1984, 1));    /* first year that does not fit */
+    TEST_ASSERT_EQUAL(0, fit_case(2043, 12, 31, 2013, 31)); /* still one step */
+    TEST_ASSERT_EQUAL(0, fit_case(2044, 1, 1, 1984, 1));    /* two steps */
+    TEST_ASSERT_EQUAL(0, fit_case(2013, 12, 31, 2013, 31)); /* in range: unchanged */
+    TEST_ASSERT_EQUAL(0, fit_case(1950, 1, 1, 1950, 1));
+    TEST_ASSERT_EQUAL(0, fit_case(1949, 6, 15, 1950, 15));  /* too old */
+    TEST_ASSERT_EQUAL(0, fit_case(1800, 3, 2, 1950, 2));
+    TEST_ASSERT_EQUAL(0, fit_case(2028, 2, 29, 1998, 28));  /* 1998 has no 29 February */
+    TEST_ASSERT_EQUAL(0, fit_case(2044, 2, 29, 1984, 29));  /* 1984 has one */
+    TEST_ASSERT_EQUAL(0, fit_case(1948, 2, 29, 1950, 28));
+    ndfs_calendar_fit_nd_range(NULL);                       /* must not crash */
+    return 0;
+}
+
+/* "Now" always packs into a valid, nonzero ND date. */
+static int test_now_is_in_range(void)
+{
+    uint32_t raw = ndfs_nd_time_now();
+    ndfs_calendar_t cal;
+
+    TEST_ASSERT(raw != 0);
+    TEST_ASSERT(ndfs_nd_time_to_calendar(raw, &cal));
+    TEST_ASSERT(cal.year >= 1950 && cal.year <= 2013);
+    return 0;
+}
+
 void run_nd_time_tests(void)
 {
     TEST_SUITE_BEGIN("ND Time Tests");
@@ -148,4 +195,6 @@ void run_nd_time_tests(void)
     RUN_TEST(test_decode_null_out_is_safe);
     RUN_TEST(test_format_known_value);
     RUN_TEST(test_format_not_set);
+    RUN_TEST(test_fit_nd_range);
+    RUN_TEST(test_now_is_in_range);
 }

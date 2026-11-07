@@ -7,7 +7,7 @@ RetroCore Labs - https://github.com/RetroCoreLabs
 """
 import pytest
 from datetime import datetime
-from ndfs.nd_time import nd_time_to_date, date_to_nd_time
+from ndfs.nd_time import nd_time_to_date, date_to_nd_time, fit_nd_range, nd_time_now
 
 
 class TestNdTimeToDate:
@@ -77,3 +77,30 @@ class TestNdTimeRoundTrip:
         assert unpacked.hour == 23
         assert unpacked.minute == 59
         assert unpacked.second == 59
+
+
+class TestFitNdRange:
+    """Ronny's rule (2026-11-07): before 1950 -> 1950; after 2013 -> back 30 years until it fits.
+    Month and time never change; 29 February becomes 28 February in a year without one."""
+
+    @pytest.mark.parametrize("given, want", [
+        ((2026, 11, 7), (1996, 11, 7)),    # today
+        ((2014, 1, 1), (1984, 1, 1)),      # first year that does not fit
+        ((2043, 12, 31), (2013, 12, 31)),  # still one step
+        ((2044, 1, 1), (1984, 1, 1)),      # two steps
+        ((2013, 12, 31), (2013, 12, 31)),  # in range: unchanged
+        ((1950, 1, 1), (1950, 1, 1)),
+        ((1949, 6, 15), (1950, 6, 15)),    # too old
+        ((1800, 3, 2), (1950, 3, 2)),
+        ((2028, 2, 29), (1998, 2, 28)),    # 1998 has no 29 February
+        ((2044, 2, 29), (1984, 2, 29)),    # 1984 has one
+        ((1948, 2, 29), (1950, 2, 28)),
+    ])
+    def test_fit(self, given, want):
+        got = fit_nd_range(datetime(*given, 13, 45, 30))
+        assert got == datetime(*want, 13, 45, 30)
+
+    def test_now_is_in_range(self):
+        raw = nd_time_now()
+        assert raw != 0
+        assert 1950 <= nd_time_to_date(raw).year <= 2013

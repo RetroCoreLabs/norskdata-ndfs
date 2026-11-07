@@ -38,6 +38,7 @@ import { ObjectFile } from './object-file.js';
 import { UserEntry } from './user-entry.js';
 import { UserFriend } from './user-friend.js';
 import { parseAccessRights } from './access-permissions.js';
+import { ndTimeNow } from './nd-time.js';
 import {
   ObjectEntry,
   computeFileNumber,
@@ -1779,6 +1780,12 @@ export class NdfsFileSystem {
     // store 1 for an empty file, so it came back out as 1 byte.
     entry.bytesInFile = fileData.length;
     entry.filePointer = new BlockPointer(topBlockId, pointerType);
+    // Created and written now, as SINTRAN stamps a file @COPY-FILE makes (measured
+    // 2026-11-07: offsets 40 and 48 both set). Today's date does not fit the 6-bit
+    // year, so ndTimeNow() moves it back 30 years (Ronny's rule, see fitNdRange).
+    // Before this both stayed 0 and SINTRAN printed "CREATED 00.00.00 ?0, 1950".
+    entry.dateCreated = ndTimeNow();
+    entry.lastDateWritten = entry.dateCreated;
     // A new file inherits the OWNING USER's default file access, which is what
     // SINTRAN does (@SET-DEFAULT-FILE-ACCESS sets the value copied onto every
     // file the user then creates). It used to be a flat ACCESS_DEFAULT (0x03FF:
@@ -1923,6 +1930,9 @@ export class NdfsFileSystem {
     // Points straight at the first data page. There is no index block to walk: page N of
     // the file is simply block (filePointer.blockId + N).
     entry.filePointer = new BlockPointer(startBlock, PointerType.Contiguous);
+    // Created now. @CREATE-FILE sets only the creation date (measured 2026-11-07:
+    // offset 40 set, offset 48 - last write - 0). See fitNdRange for the 30-year rule.
+    entry.dateCreated = ndTimeNow();
     // The owner's default file access, as for an indexed file: SINTRAN gives a new
     // contiguous file the same (measured 2026-11-04 on nd100x: with SYSTEM's default set
     // to N,RW,RWACD, @CREATE-FILE ACCCON:DATA,4 stored 0x007F). This used to be a flat
@@ -1982,6 +1992,8 @@ export class NdfsFileSystem {
     }
 
     existing.bytesInFile = fileData.length;
+    // Written now; the creation date stays (see fitNdRange for the 30-year rule).
+    existing.lastDateWritten = ndTimeNow();
 
     // pagesInFile stays at the reservation. For a contiguous file the pages are allocated
     // whether or not the data reaches them, so counting only the written pages would
@@ -2026,6 +2038,8 @@ export class NdfsFileSystem {
     existing.pagesInFile = this.countRealDataPages(fileData, holes);
     existing.bytesInFile = fileData.length; // 0 stays 0 - see the create site
     existing.filePointer = new BlockPointer(topBlockId, pointerType);
+    // Written now; the creation date stays (see fitNdRange for the 30-year rule).
+    existing.lastDateWritten = ndTimeNow();
 
     // Update user pages used. Quota tracks only REAL disk consumption: charge
     // only the new file's real (non-sparse) data pages, never the

@@ -13,6 +13,8 @@ import { ImageTemplate, BootChoice, ImageCreationOptions } from '../src/types.js
 import { NDFS_PAGE_SIZE } from '../src/constants.js';
 import { DISK_TYPES, DiskFamily, diskTypeCount, findDiskType, getDiskType } from '../src/disk-types.js';
 import { bootBlob, scsiLastPage } from '../src/boot-blobs.js';
+import { FT_INDEXED } from '../src/object-entry.js';
+import { ndTimeToDate } from '../src/nd-time.js';
 
 /** A bit file for a disk of `cap` pages with the bit file at `ba`: page 0 and the bit file pages used. */
 function makeBf(cap: number, ba: number): BitFile {
@@ -365,5 +367,70 @@ describe('disk types', () => {
       includeExtendedInfo: true,
     };
     expect(createNdfsImage(opts).length).toBe(6912 * NDFS_PAGE_SIZE);
+  });
+});
+
+describe('empty files and dates', () => {
+  // An empty file owns no page: 0 pages, file pointer 0, no index block, and no change to the
+  // free page count or the owner's quota. Measured 2026-11-07 on nd100x (a copy of SMD0.IMG):
+  // @CREATE-FILE E0:SYMB,0, @COPY-FILE "C0:SYMB",E0:SYMB and a copy of an empty file that held
+  // one page all gave pages 0, pointer 0, bytes 0xFFFFFFFF, and the free page map did not move.
+  // Overwriting a file with nothing frees its pages the same way.
+  it('an empty file owns no page, as SINTRAN writes one', () => {
+    const fs = newSmd75();
+    const usedBefore = usedOf(fs, 'SYSTEM');
+    const freeBefore = fs.getFreePages();
+
+    fs.writeFile('SYSTEM/E0:SYMB', new Uint8Array(0));
+    let e = entryOf(fs, 'E0:SYMB');
+    expect(e.pagesInFile).toBe(0);
+    expect(e.bytesInFile).toBe(0);
+    expect(e.filePointer!.blockId).toBe(0);
+    expect(e.fileTypeFlags).toBe(FT_INDEXED);
+    expect(fs.getFreePages()).toBe(freeBefore);
+    expect(usedOf(fs, 'SYSTEM')).toBe(usedBefore);
+    expect(fs.readFile('SYSTEM/E0:SYMB').length).toBe(0);
+
+    // A 3-page file overwritten with nothing gives all 4 pages back (3 data + 1 index).
+    fs.writeFile('SYSTEM/F3:DATA', new Uint8Array(3 * NDFS_PAGE_SIZE).fill(0x33));
+    expect(usedOf(fs, 'SYSTEM')).toBe(usedBefore + 4);
+    fs.writeFile('SYSTEM/F3:DATA', new Uint8Array(0));
+    e = entryOf(fs, 'F3:DATA');
+    expect(e.pagesInFile).toBe(0);
+    expect(e.filePointer!.blockId).toBe(0);
+    expect(usedOf(fs, 'SYSTEM')).toBe(usedBefore);
+    expect(fs.getFreePages()).toBe(freeBefore);
+
+    // The empty file can be filled again later.
+    fs.writeFile('SYSTEM/E0:SYMB', new Uint8Array(10).fill(0x33));
+    expect(Array.from(fs.readFile('SYSTEM/E0:SYMB'))).toEqual(new Array(10).fill(0x33));
+    expect(fs.verifyIntegrity()).toBe(true);
+  });
+
+  // New files carry a real date, as SINTRAN gives them (measured 2026-11-07): a written file gets
+  // the creation date and the last-write date, @CREATE-FILE's contiguous file only the creation
+  // date. Today's year does not fit the 6-bit field, so it is moved back 30 years (Ronny's rule);
+  // before this the dates stayed 0 ("?0, 1950" in SINTRAN).
+  it('stamps new and written files with an in-range date', () => {
+    const fs = newSmd75();
+    fs.writeFile('SYSTEM/DATED:SYMB', new Uint8Array([0x58, 0x0d, 0x0a]));
+    fs.createContiguousFile('SYSTEM/DATEC:DATA', 2);
+
+    let e = entryOf(fs, 'DATED:SYMB');
+    const year = ndTimeToDate(e.dateCreated)!.getFullYear();
+    expect(year).toBeGreaterThanOrEqual(1950);
+    expect(year).toBeLessThanOrEqual(2013);
+    expect(e.lastDateWritten).toBe(e.dateCreated);
+
+    e = entryOf(fs, 'DATEC:DATA');
+    expect(ndTimeToDate(e.dateCreated)).not.toBeNull();
+    expect(e.lastDateWritten).toBe(0);
+    const created = e.dateCreated;
+
+    // Writing into it sets the last-write date and keeps the creation date.
+    fs.writeFile('SYSTEM/DATEC:DATA', new Uint8Array([0x58, 0x0d, 0x0a]));
+    e = entryOf(fs, 'DATEC:DATA');
+    expect(e.dateCreated).toBe(created);
+    expect(ndTimeToDate(e.lastDateWritten)).not.toBeNull();
   });
 });

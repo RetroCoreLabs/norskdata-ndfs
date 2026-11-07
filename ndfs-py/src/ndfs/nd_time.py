@@ -14,11 +14,42 @@ RetroCore Labs - https://github.com/RetroCoreLabs
 """
 from __future__ import annotations
 
+import calendar
 from datetime import datetime
 from typing import Optional
 
 # ND epoch year.
 ND_EPOCH: int = 1950
+
+# Last year the 6-bit year field holds.
+ND_MAX_YEAR: int = 2013
+
+
+def fit_nd_range(dt: datetime) -> datetime:
+    """Move a date into the years an ND timestamp can hold (1950-2013).
+
+    The year field has 6 bits, so today's date does not fit. Rule chosen by
+    Ronny Hansen on 2026-11-07: a date before 1950 becomes the same day in
+    1950; a date after 2013 keeps its day, month and time and moves back 30
+    years, again until it fits (2026-11-07 becomes 1996-11-07, 2050 becomes
+    1990). 29 February becomes 28 February when the new year has no
+    29 February. A date already in range is returned unchanged.
+    """
+    year = dt.year
+    if year < ND_EPOCH:
+        year = ND_EPOCH
+    while year > ND_MAX_YEAR:
+        year -= 30
+    day = dt.day
+    if dt.month == 2 and day == 29 and not calendar.isleap(year):
+        day = 28
+    return dt.replace(year=year, day=day)
+
+
+def nd_time_now() -> int:
+    """The host's local time now, moved into range with fit_nd_range and
+    packed. This is what the writers stamp on a file they create or write."""
+    return date_to_nd_time(fit_nd_range(datetime.now()))
 
 
 def nd_time_to_date(value: int) -> Optional[datetime]:
