@@ -1514,12 +1514,12 @@ static ndfs_error_t write_data_page_to_index(struct ndfs_filesystem *fs,
  * -- i.e. how many pages write_data_page_to_index() will actually allocate a
  * real disk block for, given the exact same (file_data, file_size,
  * data_page_index) it is called with. Deliberately takes the already-decided
- * `data_pages` (post "if 0 then 1" clamp, as computed by every call site
- * before invoking allocate_and_write_data()) rather than recomputing it from
- * file_size, so this can never silently disagree with what actually gets
- * allocated -- notably for an empty (0-byte) file, which still allocates
- * exactly one real page (see write_data_page_to_index's slice_len != full
- * page case), not zero.
+ * `data_pages` (as computed by every call site before invoking
+ * allocate_and_write_data()) rather than recomputing it from file_size, so
+ * this can never silently disagree with what actually gets allocated. An
+ * empty (0-byte) file has data_pages 0 and allocates nothing, as SINTRAN does
+ * (see allocate_and_write_data). Until 2026-11-07 every call site clamped 0
+ * to 1 and an empty file got one data page plus an index block.
  *
  * User quota (pages_used) must be based on this count, never on the LOGICAL
  * page count (which counts sparse holes as if they consumed real disk space
@@ -1575,6 +1575,19 @@ static ndfs_error_t allocate_and_write_data(struct ndfs_filesystem *fs,
     uint32_t i;
 
     if (data_pages > NDFS_MAX_OBJECT_FILE_PAGES) return NDFS_ERR_NO_SPACE;
+
+    /* An empty file owns no page at all: no index block, no data page, and a
+     * file pointer of 0. That is what SINTRAN writes (measured 2026-11-07 on
+     * nd100x: @CREATE-FILE E0:SYMB,0 and @COPY-FILE "C0:SYMB",E0:SYMB both give
+     * 0 pages, pointer 0, and the free-page map does not move; even a copy of
+     * an empty file that HAS a page comes out with none). Every reader here
+     * already treats a 0 pointer as "no data". */
+    if (data_pages == 0) {
+        *out_top_block_id = 0;
+        *out_pointer_type = NDFS_PTR_CONTIGUOUS;
+        *out_struct_pages = 0;
+        return NDFS_OK;
+    }
 
     if (data_pages <= NDFS_MAX_OBJECT_FILE_PTRS) {
         /* Plain Indexed: a single index block holds all data-page pointers. */
@@ -1692,7 +1705,7 @@ static ndfs_error_t create_new_file(struct ndfs_filesystem *fs,
     ndfs_object_entry_t entry;
     ndfs_error_t err;
 
-    if (data_pages == 0) data_pages = 1;
+    /* data_pages may be 0: an empty file owns no page (see allocate_and_write_data). */
     /* NDFS_MAX_OBJECT_FILE_PAGES (262,144) is the true ceiling: a SubIndexed
      * sub-index block only has 512 pointer slots, so beyond that the file
      * genuinely cannot be represented. allocate_and_write_data() also checks
@@ -1909,8 +1922,8 @@ static ndfs_error_t update_existing_file(struct ndfs_filesystem *fs,
 
     /* Validate the new size BEFORE freeing the old blocks, so a rejected
      * write leaves the existing file (and its accounting) untouched. */
+    /* 0 for an empty file, which then owns no page (see allocate_and_write_data). */
     data_pages = (uint32_t)((file_size + NDFS_PAGE_SIZE - 1) / NDFS_PAGE_SIZE);
-    if (data_pages == 0) data_pages = 1;
     if (data_pages > NDFS_MAX_OBJECT_FILE_PAGES) return NDFS_ERR_NO_SPACE;
 
     /* Free old blocks */
@@ -2617,7 +2630,7 @@ static ndfs_error_t write_file_impl(ndfs_filesystem_t *fs,
      * file needs are filesystem overhead, never charged to the user. See
      * count_real_data_pages_in_buffer(). */
     data_pages = (uint32_t)((file_size + NDFS_PAGE_SIZE - 1) / NDFS_PAGE_SIZE);
-    if (data_pages == 0) data_pages = 1;
+    /* 0 for an empty file: no data page and no index block (see allocate_and_write_data). */
 
     /* Check for existing file */
     existing_idx = find_object(fs, path);
@@ -2628,8 +2641,9 @@ static ndfs_error_t write_file_impl(ndfs_filesystem_t *fs,
         uint32_t existing_real_pages = 0;
         /* Index and sub-index blocks are charged like data pages (SINTRAN, measured), so the
          * reservation must cover them: one block, or a top block plus one per 512 pages. */
-        uint32_t new_struct_pages = data_pages <= NDFS_MAX_OBJECT_FILE_PTRS
-            ? 1u : 1u + (data_pages + NDFS_MAX_OBJECT_FILE_PTRS - 1) / NDFS_MAX_OBJECT_FILE_PTRS;
+        uint32_t new_struct_pages = data_pages == 0 ? 0u
+            : data_pages <= NDFS_MAX_OBJECT_FILE_PTRS
+            ? 1u : 1u +(data_pages + NDFS_MAX_OBJECT_FILE_PTRS - 1) / NDFS_MAX_OBJECT_FILE_PTRS;
         uint32_t existing_struct_pages = 0;
 
         if (existing_idx >= 0) {

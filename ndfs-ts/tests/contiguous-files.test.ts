@@ -209,3 +209,49 @@ describe('WritingIntoAContiguousFile', () => {
     expect(fs.getFreePages()).toBe(freeAfterCreate);
   });
 });
+
+describe('Empty file', () => {
+  function usedOf(fs: NdfsFileSystem, name: string): number {
+    const users = fs.getUsers();
+    for (let i = 0; i < users.length; i++) {
+      if (users[i].userName === name) return users[i].pagesUsed;
+    }
+    return -1;
+  }
+
+  // An empty file owns no page: 0 pages, file pointer 0, no index block, and no change to the
+  // free page count or the owner's quota. Measured 2026-11-07 on nd100x (a copy of SMD0.IMG):
+  // @CREATE-FILE E0:SYMB,0, @COPY-FILE "C0:SYMB",E0:SYMB and a copy of an empty file that held
+  // one page all gave pages 0, pointer 0, bytes 0xFFFFFFFF, and the free page map did not move.
+  // Overwriting a file with nothing frees its pages the same way.
+  it('owns no page, as SINTRAN writes one', () => {
+    const fs = createFS();
+    const usedBefore = usedOf(fs, 'SYSTEM');
+    const freeBefore = fs.getFreePages();
+
+    fs.writeFile('SYSTEM/E0:SYMB', new Uint8Array(0));
+    let e = entryOf(fs, 'E0')!;
+    expect(e.pagesInFile).toBe(0);
+    expect(e.bytesInFile).toBe(0);
+    expect(e.filePointer!.blockId).toBe(0);
+    expect(e.fileTypeFlags).toBe(FT_INDEXED);
+    expect(fs.getFreePages()).toBe(freeBefore);
+    expect(usedOf(fs, 'SYSTEM')).toBe(usedBefore);
+    expect(fs.readFile('SYSTEM/E0:SYMB').length).toBe(0);
+
+    // A 3-page file overwritten with nothing gives all 4 pages back (3 data + 1 index).
+    fs.writeFile('SYSTEM/F3:DATA', new Uint8Array(3 * NDFS_PAGE_SIZE).fill(0x33));
+    expect(usedOf(fs, 'SYSTEM')).toBe(usedBefore + 4);
+    fs.writeFile('SYSTEM/F3:DATA', new Uint8Array(0));
+    e = entryOf(fs, 'F3')!;
+    expect(e.pagesInFile).toBe(0);
+    expect(e.filePointer!.blockId).toBe(0);
+    expect(usedOf(fs, 'SYSTEM')).toBe(usedBefore);
+    expect(fs.getFreePages()).toBe(freeBefore);
+
+    // The empty file can be filled again later.
+    fs.writeFile('SYSTEM/E0:SYMB', new Uint8Array(10).fill(0x33));
+    expect(Array.from(fs.readFile('SYSTEM/E0:SYMB'))).toEqual(new Array(10).fill(0x33));
+    expect(fs.verifyIntegrity()).toBe(true);
+  });
+});

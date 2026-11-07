@@ -14,6 +14,7 @@ import pytest
 from ndfs.bit_file import BitFile
 from ndfs.constants import NDFS_PAGE_SIZE
 from ndfs.filesystem import NdfsFileSystem
+from ndfs.object_entry import FT_INDEXED
 from ndfs.image_creator import create_image, options_for_disk_type
 from ndfs.types import ImageTemplate, ImageCreationOptions, BootChoice
 from ndfs.disk_types import DiskFamily, DISK_TYPES, disk_type_count, find_disk_type, get_disk_type
@@ -169,6 +170,41 @@ class TestFileSystemPlacement:
         assert entry_of(ndfs, "NEWCON:DATA").access_bits == 0x007F
         assert entry_of(ndfs, "NEWCON:DATA").bytes_in_file == 0
         assert entry_of(ndfs, "EMPTY:SYMB").bytes_in_file == 0
+
+    def test_empty_file_owns_no_page(self):
+        # An empty file owns no page: 0 pages, file pointer 0, no index block, and no change to
+        # the free page count or the owner's quota. Measured 2026-11-07 on nd100x (a copy of
+        # SMD0.IMG): @CREATE-FILE E0:SYMB,0, @COPY-FILE "C0:SYMB",E0:SYMB and a copy of an empty
+        # file that held one page all gave pages 0, pointer 0, bytes 0xFFFFFFFF, and the free
+        # page map did not move. Overwriting a file with nothing frees its pages the same way.
+        ndfs = new_smd75()
+        used_before = used_of(ndfs, "SYSTEM")
+        free_before = ndfs.get_free_pages()
+
+        ndfs.write_file("SYSTEM/E0:SYMB", b"")
+        e = entry_of(ndfs, "E0:SYMB")
+        assert e.pages_in_file == 0
+        assert e.bytes_in_file == 0
+        assert e.file_pointer.block_id == 0
+        assert e.file_type_flags == FT_INDEXED   # SINTRAN flags its empty file indexed, 0x0008
+        assert ndfs.get_free_pages() == free_before
+        assert used_of(ndfs, "SYSTEM") == used_before
+        assert ndfs.read_file("SYSTEM/E0:SYMB") == b""
+
+        # A 3-page file overwritten with nothing gives all 4 pages back (3 data + 1 index).
+        ndfs.write_file("SYSTEM/F3:DATA", b"\x33" * (3 * NDFS_PAGE_SIZE))
+        assert used_of(ndfs, "SYSTEM") == used_before + 4
+        ndfs.write_file("SYSTEM/F3:DATA", b"")
+        e = entry_of(ndfs, "F3:DATA")
+        assert e.pages_in_file == 0
+        assert e.file_pointer.block_id == 0
+        assert used_of(ndfs, "SYSTEM") == used_before
+        assert ndfs.get_free_pages() == free_before
+
+        # The empty file can be filled again later.
+        ndfs.write_file("SYSTEM/E0:SYMB", b"\x33" * 10)
+        assert ndfs.read_file("SYSTEM/E0:SYMB") == b"\x33" * 10
+        assert ndfs.verify_integrity()
 
     def test_single_page_file_uses_block_rule(self):
         ndfs = new_smd75()

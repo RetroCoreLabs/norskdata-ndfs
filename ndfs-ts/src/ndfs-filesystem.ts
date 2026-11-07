@@ -299,9 +299,12 @@ export class NdfsFileSystem {
     let requiredRealPages = this.countRealDataPages(fileData, holes);
     // Index and sub-index blocks are charged like data pages (SINTRAN, measured), so the
     // reservation must cover them too.
-    const dataPagesForQuota = Math.max(1, Math.ceil(fileData.length / NDFS_PAGE_SIZE));
+    // An empty file has no index block either (see allocateAndWriteData).
+    const dataPagesForQuota = Math.ceil(fileData.length / NDFS_PAGE_SIZE);
     requiredRealPages +=
-      dataPagesForQuota <= MAX_OBJECT_FILE_POINTERS
+      dataPagesForQuota === 0
+        ? 0
+        : dataPagesForQuota <= MAX_OBJECT_FILE_POINTERS
         ? 1
         : 1 + Math.ceil(dataPagesForQuota / MAX_OBJECT_FILE_POINTERS);
 
@@ -1504,12 +1507,23 @@ export class NdfsFileSystem {
    * Allocate blocks and write file data to disk.
    * Returns { topBlockId, pointerType, indexBlocksUsed } describing the allocation.
    * Supports indexed (<=512 pages) and sub-indexed (>512 pages) layouts.
+   *
+   * An empty file (0 data pages) owns no page at all: no index block, no data
+   * page, file pointer 0. That is what SINTRAN writes (measured 2026-11-07 on
+   * nd100x: @CREATE-FILE E0:SYMB,0 and @COPY-FILE "C0:SYMB",E0:SYMB both give
+   * 0 pages and pointer 0, and the free page map does not move; a copy of an
+   * empty file that HAS a page comes out with none). Every reader here treats
+   * a 0 pointer as "no data".
    */
   private allocateAndWriteData(
     fileData: Uint8Array,
     dataPages: number,
     holes?: ReadonlySet<number>,
   ): { topBlockId: number; pointerType: PointerType; indexBlocksUsed: number } {
+    if (dataPages === 0) {
+      return { topBlockId: 0, pointerType: PointerType.Contiguous, indexBlocksUsed: 0 };
+    }
+
     const useSubIndexed = dataPages > MAX_OBJECT_FILE_POINTERS;
 
     if (!useSubIndexed) {
@@ -1728,8 +1742,8 @@ export class NdfsFileSystem {
     holes?: ReadonlySet<number>,
     accessBits?: number,
   ): void {
-    let dataPages = Math.ceil(fileData.length / NDFS_PAGE_SIZE);
-    if (dataPages === 0) dataPages = 1;
+    // 0 for an empty file, which then owns no page (see allocateAndWriteData).
+    const dataPages = Math.ceil(fileData.length / NDFS_PAGE_SIZE);
 
     // Choose the object slot inside the owning user's region, and make sure
     // that user's directory page exists, before allocating file data.
@@ -1791,8 +1805,12 @@ export class NdfsFileSystem {
         : user.defaultFileAccess
           ? user.defaultFileAccess & 0x7fff
           : ACCESS_DEFAULT;
-    entry.fileTypeFlags =
-      pointerType === PointerType.Contiguous ? FT_CONTIGUOUS : FT_INDEXED;
+    // Always indexed on this path, even for an empty file whose pointer is 0
+    // (type bits 0): SINTRAN flags its own empty file indexed (0x0008,
+    // measured 2026-11-07). Deriving the flag from the pointer type would mark
+    // an empty file contiguous with no run, and the next write would fail.
+    // createContiguousFile is the only path that makes a contiguous file.
+    entry.fileTypeFlags = FT_INDEXED;
     // objectIndex already encodes [user|fileEntry] (chosen in the user region).
     entry.diskObjectIndex = entry.objectIndex;
     entry.nextVersion = entry.objectIndex;
@@ -1998,8 +2016,8 @@ export class NdfsFileSystem {
     user.pagesUsed = user.pagesUsed >= oldRealPages ? user.pagesUsed - oldRealPages : 0;
 
     // Allocate new blocks
-    let dataPages = Math.ceil(fileData.length / NDFS_PAGE_SIZE);
-    if (dataPages === 0) dataPages = 1;
+    // 0 for an empty file, which then owns no page (see allocateAndWriteData).
+    const dataPages = Math.ceil(fileData.length / NDFS_PAGE_SIZE);
 
     const { topBlockId, pointerType, indexBlocksUsed } = this.allocateAndWriteData(fileData, dataPages, holes);
 
@@ -2102,8 +2120,9 @@ export class NdfsFileSystem {
    * user data.
    */
   private countRealDataPages(data: Uint8Array, holes?: ReadonlySet<number>): number {
-    let filePages = Math.ceil(data.length / NDFS_PAGE_SIZE);
-    if (filePages === 0) filePages = 1;
+    // An empty file occupies (and charges for) no page, as SINTRAN does
+    // (see allocateAndWriteData). Until 2026-11-07 it counted 1.
+    const filePages = Math.ceil(data.length / NDFS_PAGE_SIZE);
 
     let realPages = 0;
     for (let i = 0; i < filePages; i++) {

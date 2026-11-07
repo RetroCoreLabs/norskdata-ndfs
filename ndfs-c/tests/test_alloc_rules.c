@@ -271,6 +271,66 @@ static int test_new_files_get_owner_default_access(void)
     return 0;
 }
 
+/* An empty file owns no page: 0 pages, file pointer 0, no index block, and no change to the
+ * free page count or the owner's quota. Measured 2026-11-07 on nd100x (a copy of SMD0.IMG):
+ * @CREATE-FILE E0:SYMB,0, @COPY-FILE "C0:SYMB",E0:SYMB and a copy of an empty file that held
+ * one page all gave pages 0, pointer 0, bytes 0xFFFFFFFF, and the free page map did not move.
+ * Overwriting a file with nothing frees its pages the same way. */
+static int test_empty_file_owns_no_page(void)
+{
+    ndfs_filesystem_t *fs = new_smd75();
+    ndfs_object_entry_t e;
+    uint8_t data[3 * NDFS_PAGE_SIZE];
+    uint8_t *back = NULL;
+    size_t back_size = 99;
+    uint32_t free_before = 0, free_now = 0, used_before;
+    char *report = NULL;
+    int fsck_errors = -1;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    memset(data, 0x33, sizeof(data));
+    used_before = used_of(fs, "SYSTEM");
+    TEST_ASSERT_OK(ndfs_get_free_pages(fs, &free_before));
+
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/E0:SYMB", data, 0));
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "E0:SYMB", "SYSTEM", &e));
+    TEST_ASSERT_EQUAL(0, e.pages_in_file);
+    TEST_ASSERT_EQUAL(0, e.bytes_in_file);
+    TEST_ASSERT_EQUAL(0, e.file_pointer.block_id);
+    TEST_ASSERT_EQUAL(NDFS_FT_INDEXED, e.file_type_flags);
+    TEST_ASSERT_OK(ndfs_get_free_pages(fs, &free_now));
+    TEST_ASSERT_EQUAL(free_before, free_now);
+    TEST_ASSERT_EQUAL(used_before, used_of(fs, "SYSTEM"));
+    TEST_ASSERT_OK(ndfs_read_file(fs, "SYSTEM/E0:SYMB", &back, &back_size));
+    TEST_ASSERT_EQUAL(0, back_size);
+    ndfs_free_data(back);
+    back = NULL;
+
+    /* A 3-page file overwritten with nothing gives all 4 pages back (3 data + 1 index). */
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/F3:DATA", data, sizeof(data)));
+    TEST_ASSERT_EQUAL(used_before + 4, used_of(fs, "SYSTEM"));
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/F3:DATA", data, 0));
+    TEST_ASSERT_OK(ndfs_get_object_entry(fs, "F3:DATA", "SYSTEM", &e));
+    TEST_ASSERT_EQUAL(0, e.pages_in_file);
+    TEST_ASSERT_EQUAL(0, e.file_pointer.block_id);
+    TEST_ASSERT_EQUAL(used_before, used_of(fs, "SYSTEM"));
+    TEST_ASSERT_OK(ndfs_get_free_pages(fs, &free_now));
+    TEST_ASSERT_EQUAL(free_before, free_now);
+
+    /* The empty file can be filled again later. */
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/E0:SYMB", data, 10));
+    TEST_ASSERT_OK(ndfs_read_file(fs, "SYSTEM/E0:SYMB", &back, &back_size));
+    TEST_ASSERT_EQUAL(10, back_size);
+    TEST_ASSERT_EQUAL(0x33, back[9]);
+    ndfs_free_data(back);
+
+    TEST_ASSERT_OK(ndfs_fsck(fs, &report, &fsck_errors));
+    TEST_ASSERT_EQUAL(0, fsck_errors);
+    free(report);
+    ndfs_close(fs);
+    return 0;
+}
+
 /* A contiguous file of one page uses the data page rule: 32768 on a cold SMD 75 MB. */
 static int test_single_page_file_uses_block_rule(void)
 {
@@ -382,6 +442,7 @@ void run_alloc_rules_tests(void)
     RUN_TEST(test_contiguous_stack_from_top);
     RUN_TEST(test_single_page_file_uses_block_rule);
     RUN_TEST(test_new_files_get_owner_default_access);
+    RUN_TEST(test_empty_file_owns_no_page);
     RUN_TEST(test_indexed_file_placement);
     RUN_TEST(test_quota_charges_index_and_object_pages);
     RUN_TEST(test_quota_large_file_sub_index);

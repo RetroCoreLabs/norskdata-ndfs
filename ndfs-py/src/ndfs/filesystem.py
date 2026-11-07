@@ -308,7 +308,8 @@ class NdfsFileSystem:
         total_required = self._count_real_data_pages_in_buffer(file_data, holes)
         # Index and sub-index blocks are charged like data pages (SINTRAN, measured), so the
         # reservation must cover them too.
-        _data_pages = max(1, math.ceil(len(file_data) / NDFS_PAGE_SIZE))
+        # An empty file owns no page and no index block (see _allocate_and_write_data).
+        _data_pages = math.ceil(len(file_data) / NDFS_PAGE_SIZE)
         total_required += self._structural_pages_for(_data_pages)
 
         # Check for existing file. The TYPE is part of a SINTRAN file's
@@ -1172,7 +1173,10 @@ class NdfsFileSystem:
           512-page group, plus one top-level sub-index block pointing at
           those group index blocks. E.g. 1000 pages -> ceil(1000/512) = 2
           group index blocks + 1 sub-index block = 3 structural pages.
+        - An empty file (0 data pages): 0, it has no index block at all.
         """
+        if data_pages == 0:
+            return 0
         if data_pages <= MAX_OBJECT_FILE_POINTERS:
             return 1
         num_index_blocks = math.ceil(data_pages / MAX_OBJECT_FILE_POINTERS)
@@ -1197,9 +1201,9 @@ class NdfsFileSystem:
         matching that method's own `len(page_slice) == NDFS_PAGE_SIZE` guard)
         so the count always agrees with what allocation will actually do.
         """
+        # An empty file occupies (and charges for) no page, as SINTRAN does
+        # (see _allocate_and_write_data). Until 2026-11-07 it counted 1.
         total_pages = math.ceil(len(data) / NDFS_PAGE_SIZE)
-        if total_pages == 0:
-            total_pages = 1  # empty file still occupies (and charges for) one page
 
         real_pages = 0
         for p in range(total_pages):
@@ -1381,7 +1385,17 @@ class NdfsFileSystem:
         top-level sub-index block holding up to 512 pointers to *group*
         index blocks, each of which holds up to 512 data-block pointers --
         i.e. exactly the Indexed layout, repeated per 512-page group.
+
+        An empty file (0 data pages) owns no page at all: no index block, no
+        data page, file pointer 0 -- what SINTRAN writes (measured
+        2026-11-07 on nd100x: @CREATE-FILE E0:SYMB,0 and @COPY-FILE
+        "C0:SYMB",E0:SYMB both give 0 pages and pointer 0, and the free page
+        map does not move; a copy of an empty file that HAS a page comes out
+        with none). Every reader here treats a 0 pointer as "no data".
         """
+        if data_pages == 0:
+            return 0, PointerType.Contiguous, 0
+
         use_sub_indexed = data_pages > MAX_OBJECT_FILE_POINTERS
 
         if not use_sub_indexed:
@@ -1873,9 +1887,8 @@ class NdfsFileSystem:
         access_bits: Optional[int] = None,
     ) -> None:
         """Create a new file on the filesystem."""
+        # 0 for an empty file, which then owns no page (see _allocate_and_write_data).
         data_pages = math.ceil(len(file_data) / NDFS_PAGE_SIZE)
-        if data_pages == 0:
-            data_pages = 1
         # A single indexed block holds 512 data-page pointers; larger files
         # (up to 512*512 = 262144 pages, ~512MB) use a SubIndexed layout --
         # see _allocate_and_write_data. Files beyond that ceiling still raise
@@ -2169,9 +2182,8 @@ class NdfsFileSystem:
         # Create new allocation. Files up to 512 pages use a single Indexed
         # index block; larger files (up to 262144 pages) use a SubIndexed
         # layout -- _allocate_and_write_data raises past that hard ceiling.
+        # 0 for an empty file, which then owns no page (see _allocate_and_write_data).
         data_pages = math.ceil(len(file_data) / NDFS_PAGE_SIZE)
-        if data_pages == 0:
-            data_pages = 1
         if data_pages > MAX_OBJECT_FILE_POINTERS * MAX_OBJECT_FILE_POINTERS:
             raise IOError(
                 "File too large for a sub-indexed object file "

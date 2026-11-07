@@ -2,7 +2,24 @@
 
 All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndtool`).
 
-## Unreleased - 2026-11-04
+## Unreleased - 2026-11-07
+
+### Fixed - an empty file owns no page, as SINTRAN writes one (all three ports and ndtool)
+
+* An empty file written by the libraries used to get one data page and one index block. SINTRAN
+  gives it none: measured on nd100x (a copy of `SMD0.IMG`), `@CREATE-FILE E0:SYMB,0`,
+  `@COPY-FILE "C0:SYMB",E0:SYMB` and a copy of a tools-made empty file that HAD a page all
+  stored 0 pages, file pointer 0, bytes 0xFFFFFFFF and the indexed flag 0x0008, and the free
+  page map did not move. The libraries now write that: no page, pointer 0, nothing charged to
+  the owner, and overwriting a file with nothing gives all its pages back.
+* Checked on the machine: an empty file put on by `ndtool --put` reads in SINTRAN as
+  `0 PAGES , 0 BYTES IN FILE`, `@COPY-FILE` reports `SOURCE EMPTY` for it as for its own, and
+  `@COPY-FILE NEWEMP:SYMB,RTFIL:DATA` fills it (2 pages, 3202 bytes). fsck shows nothing new.
+* Tests: C `test_empty_file_owns_no_page`, Python `test_empty_file_owns_no_page`, TypeScript
+  `Empty file > owns no page, as SINTRAN writes one`.
+* Empty files already on a pack with a page keep it; both forms read as empty.
+
+## 2026-11-04
 
 ### Added - the SINTRAN access commands (all three ports and ndtool)
 
