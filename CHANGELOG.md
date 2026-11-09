@@ -4,6 +4,15 @@ All notable changes to the NDFS libraries (`ndfs-c`, `ndfs-py`, `ndfs-ts`, `ndto
 
 ## Unreleased - 2026-11-07
 
+### Added - fsck repairs empty files that an older writer stored as 1 byte (C, ndtool)
+
+* Up to 2026-11-04 the writers stored an empty file's length as 0, which reads as 1 byte, on
+  every entry of each object page they rewrote. `ndtool --fsck` now warns for each file that
+  reads 1 byte but owns no page, and `--fix` (repair R7) stores 0xFFFFFFFF, as SINTRAN does. A
+  1-byte file that owns pages is only counted, since it cannot be told from a real one. Details
+  and the measurements: `docs/FSCK-FIX-PLAN.md`, "R7". fsck exists only in the C library, so
+  Python and TypeScript are unchanged.
+
 ### Fixed - new files get a date (all three ports and ndtool)
 
 * A file put on by the libraries had creation date 0, so SINTRAN printed

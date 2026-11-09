@@ -4157,6 +4157,7 @@ typedef struct {
     fsck_map_t   map;
     fsck_list_t  orphans;          /* marked used, no owner, below the declared capacity */
     fsck_list_t  free_ref;         /* used by a file or structure, marked free */
+    fsck_list_t  was_empty;        /* index into fs->objects: reads 1 byte, owns no page (R7) */
     uint32_t     spare_marked_used;
     uint32_t     multiply_referenced;
     uint32_t     reserved_unmarked;/* blocks 0..6 not marked used */
@@ -4174,6 +4175,7 @@ static void fsck_state_free(fsck_state_t *st)
     free(st->map.rec);
     free(st->orphans.v);
     free(st->free_ref.v);
+    free(st->was_empty.v);
     memset(st, 0, sizeof(*st));
 }
 
@@ -4503,11 +4505,32 @@ static ndfs_error_t fsck_analyze(const struct ndfs_filesystem *fs, bool verbose,
     fsck_say(t, "\nPhase 5: File structure validation\n");
     {
         uint32_t zero_byte_files = 0;
+        uint32_t one_byte_with_pages = 0;
 
         for (i = 0; i < fs->object_count; i++) {
             const ndfs_object_entry_t *obj = &fs->objects[i];
 
             if (obj->bytes_in_file == 0 && obj->pages_in_file > 0) zero_byte_files++;
+            /* A file that reads 1 byte but owns no page cannot hold that byte: it was empty.
+             * SINTRAN stores an empty file's length as 0xFFFFFFFF (bytes - 1); the ndfs
+             * writers before 2026-11-04 stored 0, which reads back as 1 byte, on every entry
+             * of each object page they rewrote. Measured: SMD0-org.IMG -> SMD0.IMG, four such
+             * files went from 0xFFFFFFFF to 0 with their dates unchanged, all with 0 pages.
+             * A 1-byte file WITH pages cannot be told from a real one, so it is only counted. */
+            if (obj->bytes_in_file == 1) {
+                if (obj->pages_in_file == 0) {
+                    bool oom_l = false;
+                    char full[48];
+                    ndfs_oe_full_name(obj, full, sizeof(full));
+                    fsck_say(t, "  WARNING: File '%s/%s' reads 1 byte but owns no page: it was empty (an ndfs writer before 2026-11-04 stored it so). --fix repairs it (R7).\n",
+                             obj->user_name, full);
+                    fsck_list_add(&st->was_empty, (uint32_t)i, &oom_l);
+                    if (oom_l) st->oom = true;
+                    st->warnings++;
+                } else {
+                    one_byte_with_pages++;
+                }
+            }
             if (!ndfs_bp_is_valid(&obj->file_pointer) &&
                 (obj->pages_in_file > 0 ||
                  (obj->file_pointer.type == NDFS_PTR_RESERVED && obj->file_pointer.block_id != 0))) {
@@ -4523,6 +4546,9 @@ static ndfs_error_t fsck_analyze(const struct ndfs_filesystem *fs, bool verbose,
         if (zero_byte_files > 0)
             fsck_say(t, "  INFO: %u files with 0 bytes but allocated pages (device/system files)\n",
                      zero_byte_files);
+        if (one_byte_with_pages > 0)
+            fsck_say(t, "  INFO: %u files of 1 byte that own pages. If an ndfs writer before 2026-11-04 rewrote this image, some may have been empty; that cannot be told from the image.\n",
+                     one_byte_with_pages);
     }
 
     /* The map is complete when nothing was skipped: a block that looks unreferenced may
@@ -4711,7 +4737,7 @@ static void fsck_say_block_line(fsck_text_t *t, bool dry, const char *rule, uint
     (*shown)++;
 }
 
-/* Run the repairs R1 to R5 of docs/FSCK-FIX-PLAN.md. `st` is the analysis of the image as it is.
+/* Run the repairs R1 to R5 and R7 of docs/FSCK-FIX-PLAN.md. `st` is the analysis of the image as it is.
  * Returns the number of repairs done (or listed, in a dry run). */
 static ndfs_error_t fsck_repair(struct ndfs_filesystem *fs, const ndfs_fsck_options_t *o,
                                 fsck_state_t *st, fsck_text_t *t, int *n_repairs, bool *refused)
@@ -4837,6 +4863,28 @@ static ndfs_error_t fsck_repair(struct ndfs_filesystem *fs, const ndfs_fsck_opti
         count++;
     }
     (void)wrote_page0;
+
+    /* R7: a file that reads 1 byte but owns no page was empty. Store its length as SINTRAN
+     * does, 0xFFFFFFFF. Only the length changes; the object page is rewritten from the
+     * loaded entries, each based on its own on-disk bytes. */
+    for (i = 0; i < st->was_empty.n; i++) {
+        ndfs_object_entry_t *obj = &fs->objects[st->was_empty.v[i]];
+        char full[48];
+        ndfs_oe_full_name(obj, full, sizeof(full));
+        fsck_say(t, "  %sR7 %s/%s: length 1 -> 0 bytes (owns no page, was empty)\n",
+                 dry ? "would " : "", obj->user_name, full);
+        if (!dry) {
+            ndfs_error_t e;
+            obj->bytes_in_file = 0;
+            e = write_object_page(fs, obj->object_index);
+            if (e != NDFS_OK) {
+                obj->bytes_in_file = 1; /* the page was not written: keep memory as the disk */
+                fsck_say(t, "  R7 %s/%s: not done (%s)\n", obj->user_name, full, ndfs_strerror(e));
+                continue;
+            }
+        }
+        count++;
+    }
 
     if (!dry) {
         if (bits_changed) write_bit_file_pages(fs);

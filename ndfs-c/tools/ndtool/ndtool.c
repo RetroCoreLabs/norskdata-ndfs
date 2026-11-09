@@ -475,7 +475,8 @@ static void print_usage(const char *prog)
     printf("                  cross-link, the quota table and one line per finding (FAILED|file|page|block|reason).\n");
     printf("  --fix           With --fsck: do the safe repairs and check again. Set a bit for a page that a\n");
     printf("                  file uses but the bit file calls free (R1); clear the bit of an orphan page that\n");
-    printf("                  is all zero (R4); recompute a wrong Extended Info Block checksum (R3). Orphan\n");
+    printf("                  is all zero (R4); recompute a wrong Extended Info Block checksum (R3); store a\n");
+    printf("                  file that reads 1 byte but owns no page as empty, as SINTRAN does (R7). Orphan\n");
     printf("                  pages with data are never freed. Stop the emulator first and add -f. -n lists\n");
     printf("                  the repairs and writes nothing. IMAGE.fsck-undo is written before the image.\n");
     printf("  --recover-orphans USER  With --fsck --fix: runs of orphan pages that hold data become files\n");

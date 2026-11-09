@@ -46,6 +46,7 @@ Rule: a repair is allowed only if (a) the right value follows from the bytes on 
 | R4 | Orphan page, ALL 2048 bytes zero | clear the bit | nothing stored there |
 | R5 | Orphan page with data | NOT freed. With --recover-orphans: copy each run of orphan pages into a new file LOSTFOUND/ORPHAN-<firstblock>:DATA owned by a chosen user, the pages stay where they are, then the file index points at them | no byte is lost or moved |
 | R6 | pages_used differs from the SINTRAN rule (data + index blocks + object-entry pages) | recompute and store, ONLY with --fix-quota, ONLY after TODO T7/T8 confirm the rule | rule is proven for 8 of 11 users only |
+| R7 | File reads 1 byte (length field 0) but owns no page | store the length as 0xFFFFFFFF (empty), as SINTRAN does | 1 byte cannot be held without a page; SINTRAN itself copies such a file as SOURCE EMPTY (added 2026-11-09, see below) |
 
 Not repaired, only reported (reason in brackets):
 - Cross-links (which owner is right is unknown; a copy-out of both files with the shared pages named is offered instead: --salvage DIR).
@@ -118,6 +119,28 @@ Differences from the text above:
 - R5 names the file ORPHAN-n:DATA and gives it to the user named on the command line. The plan wrote LOSTFOUND/ORPHAN-n:DATA, which cannot be both a user and an owner.
 - The Extended Info Block checksum (R3) is reported as a WARNING (DAMAGED) only when the block is there: a floppy has none, and a FLOMON boot area is not one.
 - A repair needs -f (or -n for a list). Whether SINTRAN has the directory entered cannot be seen in the file; the Extended Info flag is printed when it is set.
+
+## R7, added 2026-11-09: empty files that an older writer turned into 1-byte files
+
+SINTRAN stores a file's length as bytes minus one, so an empty file holds 0xFFFFFFFF. Up to
+2026-11-04 the ndfs writers stored 0 for an empty file, which reads back as 1 byte, and did it
+to every entry on each object page they rewrote (fixed in 7635bc8). fsck now gives a WARNING for
+each file that reads 1 byte but owns no page, and --fix stores 0xFFFFFFFF for it.
+
+- **Proof that these were empty:** nd100x `SMD0-org.IMG` against `SMD0.IMG` (rewritten by the old
+  tools): `(SYSTEM)RONNY:TXT`, `RONNY2:TXT`, `RONNY-T1:SYMB` and `COSMOS-SPOOLING` went from
+  0xFFFFFFFF to 0 with their dates unchanged, so SINTRAN never wrote them. All four have no page.
+- **Run on a copy of `SMD0.IMG`:** the dry run named exactly those four; after --fix -f, `cmp -l`
+  showed 16 bytes changed, bytes 56-59 of those four entries, 0 to 0xFF, nothing else. SINTRAN
+  booted on the repaired copy and answered `SOURCE EMPTY` to `@COPY-FILE "ECHK0:SYMB",RONNY:TXT`
+  for all three text files, as it did before the repair: SINTRAN goes by the pages, so the wrong
+  length misled only the ndfs tools.
+- **A 1-byte file WITH pages is not repaired:** it cannot be told from a real 1-byte file. fsck
+  counts them in an INFO line. On this box: `(SYSTEM)SWAP-FILE:DATA` (2000 pages) on every
+  ND5000 pack, `MACM-AREA:DATA` and `WOKE:TXT` on BIGDISK0-K-100.IMG. Only an earlier copy of the
+  same pack can settle those.
+- Test: `test_fsck_ex_fix_r7_one_byte_without_page_was_empty` (warning, dry run writes nothing,
+  repair changes exactly 4 bytes, a real 1-byte file is left alone).
 
 Not tested: --fix on an image that SINTRAN or the emulator still has entered; images over 100000 findings (the lists are cut at 100000 and the cut is printed).
 

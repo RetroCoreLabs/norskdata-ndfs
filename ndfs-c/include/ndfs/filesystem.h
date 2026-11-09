@@ -684,7 +684,7 @@ typedef enum {
 /** Options of ndfs_fsck_ex(). All false/NULL = the read only check. See docs/FSCK-FIX-PLAN.md. */
 typedef struct {
     bool        verbose;      /**< orphan runs, both owners of every cross-link, quota table, machine lines */
-    bool        fix;          /**< repairs R1 to R4 (bit file, Extended Info checksum), and R5 with recover_orphans_user */
+    bool        fix;          /**< repairs R1 to R4 (bit file, Extended Info checksum), R7 (1-byte file with no page was empty), and R5 with recover_orphans_user */
     bool        dry_run;      /**< with fix: list the repairs, write nothing */
     bool        force;        /**< with fix: the caller has stopped any emulator that has the image entered */
     const char *recover_orphans_user; /**< R5: orphan runs that hold data become files ORPHAN-n:DATA of this user */

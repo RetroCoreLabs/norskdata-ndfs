@@ -1136,6 +1136,96 @@ static int test_fsck_ex_incomplete_map_blocks_orphan_repairs(void)
     return 0;
 }
 
+/* Offset in buf of the 64-byte object entry named `name` (NAME' at entry offset 2, in use). */
+static long find_entry_offset(const uint8_t *buf, size_t size, const char *name)
+{
+    size_t n = strlen(name), off;
+    for (off = 0; off + NDFS_ENTRY_SIZE <= size; off += NDFS_ENTRY_SIZE) {
+        if ((buf[off] & 0x80) && memcmp(buf + off + 2, name, n) == 0 && buf[off + 2 + n] == 0x27)
+            return (long)off;
+    }
+    return -1;
+}
+
+/* R7: a file that reads 1 byte but owns no page was empty. The ndfs writers before
+ * 2026-11-04 stored an empty file's length as 0 (reads 1 byte) instead of SINTRAN's
+ * 0xFFFFFFFF on every entry of each object page they rewrote. The check warns, the repair
+ * writes 0xFFFFFFFF back, and a real 1-byte file (which owns a page) is left alone: after
+ * the repair exactly those 4 bytes of the image differ. */
+static int test_fsck_ex_fix_r7_one_byte_without_page_was_empty(void)
+{
+    ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_12MB, "FSCKR7");
+    ndfs_filesystem_t *dirty = NULL;
+    uint8_t *buf = NULL, *fixed = NULL;
+    size_t size = 0, size2 = 0, k, changed = 0;
+    long e_off, one_off;
+    const uint8_t one = 'x';
+    ndfs_fsck_options_t o;
+    ndfs_fsck_result_t r;
+
+    TEST_ASSERT_NOT_NULL(fs);
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/WASEMPTY:DATA", NULL, 0));
+    TEST_ASSERT_OK(ndfs_write_file(fs, "SYSTEM/REALONE:DATA", &one, 1));
+    TEST_ASSERT_OK(ndfs_to_buffer(fs, &buf, &size));
+    e_off = find_entry_offset(buf, size, "WASEMPTY");
+    one_off = find_entry_offset(buf, size, "REALONE");
+    TEST_ASSERT(e_off >= 0 && one_off >= 0);
+    /* as SINTRAN and today's writers store them */
+    TEST_ASSERT_EQUAL(0xFFFFFFFFu, ndfs_read_u32be(buf, (size_t)e_off + 56));
+    TEST_ASSERT_EQUAL(0u, ndfs_read_u32be(buf, (size_t)e_off + 52));
+    TEST_ASSERT_EQUAL(0u, ndfs_read_u32be(buf, (size_t)one_off + 56));
+    TEST_ASSERT(ndfs_read_u32be(buf, (size_t)one_off + 52) > 0);
+    /* what an old writer left: the empty file's length stored as 0 */
+    memset(buf + e_off + 56, 0, 4);
+
+    dirty = open_rw(buf, size);
+    TEST_ASSERT_NOT_NULL(dirty);
+    memset(&o, 0, sizeof(o));
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT_EQUAL(NDFS_FSCK_DAMAGED, r.verdict);
+    TEST_ASSERT(strstr(r.report, "WASEMPTY:DATA' reads 1 byte but owns no page") != NULL);
+    TEST_ASSERT(strstr(r.report, "REALONE:DATA' reads 1 byte") == NULL);
+    TEST_ASSERT(strstr(r.report, "1 files of 1 byte that own pages") != NULL);
+    ndfs_fsck_result_free(&r);
+
+    /* dry run lists it and writes nothing */
+    o.fix = true;
+    o.dry_run = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT(strstr(r.report, "would R7 SYSTEM/WASEMPTY:DATA") != NULL);
+    TEST_ASSERT_EQUAL(1, r.repairs);
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &fixed, &size2));
+    TEST_ASSERT(memcmp(buf, fixed, size) == 0);
+    free(fixed);
+
+    /* the repair: clean afterwards, and only the 4 length bytes of WASEMPTY differ */
+    o.dry_run = false;
+    o.force = true;
+    TEST_ASSERT_OK(ndfs_fsck_ex(dirty, &o, &r));
+    TEST_ASSERT_EQUAL(1, r.repairs);
+    TEST_ASSERT_EQUAL(NDFS_FSCK_CLEAN, r.verdict);
+    TEST_ASSERT(strstr(r.report, "R7 SYSTEM/WASEMPTY:DATA: length 1 -> 0 bytes") != NULL);
+    TEST_ASSERT_NOT_NULL(r.undo_data);
+    ndfs_fsck_result_free(&r);
+    TEST_ASSERT_OK(ndfs_to_buffer(dirty, &fixed, &size2));
+    TEST_ASSERT_EQUAL((int)size, (int)size2);
+    for (k = 0; k < size; k++) {
+        if (buf[k] != fixed[k]) {
+            changed++;
+            TEST_ASSERT((long)k >= e_off + 56 && (long)k < e_off + 60);
+        }
+    }
+    TEST_ASSERT_EQUAL(4, (int)changed);
+    TEST_ASSERT_EQUAL(0xFFFFFFFFu, ndfs_read_u32be(fixed, (size_t)e_off + 56));
+    TEST_ASSERT_EQUAL(0u, ndfs_read_u32be(fixed, (size_t)one_off + 56));
+
+    free(buf); free(fixed);
+    ndfs_close(dirty);
+    ndfs_close(fs);
+    return 0;
+}
+
 static int test_fsck_ex_read_only_handle_refuses_fix(void)
 {
     ndfs_filesystem_t *fs = create_writable(NDFS_TMPL_FLOPPY_12MB, "FSCKRO");
@@ -1184,5 +1274,6 @@ void run_fsck_tests(void)
     RUN_TEST(test_fsck_ex_fix_orphans_zero_freed_data_kept_and_recovered);
     RUN_TEST(test_fsck_ex_extended_info_checksum_fixed);
     RUN_TEST(test_fsck_ex_incomplete_map_blocks_orphan_repairs);
+    RUN_TEST(test_fsck_ex_fix_r7_one_byte_without_page_was_empty);
     RUN_TEST(test_fsck_ex_read_only_handle_refuses_fix);
 }
